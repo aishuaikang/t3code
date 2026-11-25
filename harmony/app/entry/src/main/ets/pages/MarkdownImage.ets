@@ -49,14 +49,17 @@ export struct MarkdownImage {
       }
       Stack() {
         Image(this.source).width('100%').height('100%').objectFit(ImageFit.Contain)
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
           .scale({ x: this.zoom, y: this.zoom }).translate({ x: this.offsetX, y: this.offsetY })
       }.layoutWeight(1).width('100%').clip(true)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         .gesture(PinchGesture().onActionStart(() => { this.startZoom = this.zoom; })
           .onActionUpdate((event: GestureEvent) => { this.zoom = Math.max(1, Math.min(6, this.startZoom * event.scale));
             if (this.zoom === 1) { this.offsetX = 0; this.offsetY = 0; } }))
         .parallelGesture(PanGesture().onActionStart(() => { this.startX = this.offsetX; this.startY = this.offsetY; })
           .onActionUpdate((event: GestureEvent) => { if (this.zoom > 1) { this.offsetX = this.startX + event.offsetX; this.offsetY = this.startY + event.offsetY; } }))
     }.width('100%').height('100%').backgroundColor(ThemeRuntime.color(this.themeKey, 'screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
   build() {
     Column() {

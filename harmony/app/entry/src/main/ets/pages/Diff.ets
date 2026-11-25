@@ -411,5 +411,6 @@ struct DiffPage {
     .width('100%')
     .height('100%')
     .backgroundColor(this.color('screen'))
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

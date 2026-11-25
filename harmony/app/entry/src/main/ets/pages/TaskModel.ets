@@ -200,7 +200,8 @@ struct TaskModel {
               }.width('100%')
             }
           }, (descriptor: ModelOptionDescriptor) => `${this.current?.instanceId}:${this.current?.model}:${JSON.stringify(descriptor)}`)
-        }.layoutWeight(1).width('100%')
+        }.layoutWeight(1).width('100%').contentEndOffset(16)
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       } else {
       Text('运行权限').fontSize(this.font(15)).fontColor(this.color('foreground')).width('100%')
       Row({ space: 8 }) {
@@ -246,8 +247,10 @@ struct TaskModel {
               .enabled(this.loaded && !this.busy).onClick(() => { this.selectModel(choice); })
           }
         }, (choice: ModelChoice) => choice.instanceId + ':' + choice.model)
-      }.layoutWeight(1).width('100%')
+      }.layoutWeight(1).width('100%').contentEndOffset(16)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       }
-    }.padding(16).width('100%').height('100%').backgroundColor(this.color('screen'))
+    }.padding({ left: 16, right: 16, top: 16 }).width('100%').height('100%').backgroundColor(this.color('screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

@@ -172,8 +172,10 @@ struct AddProject {
                 .onClick(() => { this.browse(entry.fullPath); })
             }
           }, (entry: FolderEntry) => entry.fullPath)
-        }.layoutWeight(1).width('100%')
+        }.layoutWeight(1).width('100%').contentEndOffset(16)
+          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       }
-    }.padding(16).width('100%').height('100%').backgroundColor(this.color('screen'))
+    }.padding({ left: 16, right: 16, top: 16 }).width('100%').height('100%').backgroundColor(this.color('screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

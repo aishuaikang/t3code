@@ -136,6 +136,12 @@ Scroll a message behind the composer and a task behind the bottom navigation.
 Tap and hold the gaps between controls: neither underlying item should react.
 The controls themselves must still work, and the uncovered list must scroll.
 
+With gesture navigation enabled, scroll back through a long conversation with a
+pending approval. Message text should pass behind the system gesture indicator
+without a horizontal cutoff; all approval buttons should stay above it. Open
+and dismiss the keyboard in a normal conversation, then scroll to the end: the
+last message should clear the composer and the composer should clear the keyboard.
+
 The Swift runner exercises module registration, attributed text storage,
 composer creation, diff display-list rendering and interactions, and terminal
 size estimation without an engine. macOS class-cluster initialization is handled

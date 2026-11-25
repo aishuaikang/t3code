@@ -544,6 +544,7 @@ struct TerminalPage {
       .onKeyEvent((event: KeyEvent): boolean => this.textKey(event))
       .padding({ top: 8, left: 12, right: 12, bottom: 8 + this.keyboardInset })
       .width('100%').height('100%').backgroundColor(this.color('screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .bindSheet($$this.outputOpen, this.outputSheet(), { systemMaterial: immersiveMaterial('popup'), height: SheetSize.LARGE, title: { title: '可见终端输出' }, dragBar: true, showClose: true })
   }
 }

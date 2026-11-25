@@ -160,6 +160,7 @@ export struct SourceFileText {
           })
       }
       Canvas(this.canvas).width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         .onReady(() => { this.ready = true; this.scheduleLayout(); })
         .onAreaChange((oldArea: Area, newArea: Area) => {
           if (oldArea.width !== newArea.width || oldArea.height !== newArea.height) this.invalidateLayout();
@@ -187,7 +188,9 @@ export struct SourceFileText {
           }
         }.width('100%').alignItems(VerticalAlign.Top)
       }.width('100%').height('100%').align(Alignment.TopStart)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         .onDidScroll(() => { this.draw(); this.scheduleLayout(); })
     }.width('100%').height('100%').clip(true)
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

@@ -2562,6 +2562,8 @@ struct ThreadPage {
       }
       .height('100%').width('100%').padding({ left: 16, right: 16 }).contentStartOffset(8)
       .contentEndOffset(this.composerHeight + 8)
+      // The list, refresh viewport and rounded card all need to draw past the composer’s safe bounds.
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .scrollBar(BarState.Auto).scrollBarWidth(2)
       .scrollBarColor('#66' + this.color('foreground-muted').slice(1))
       .onScrollIndex((start: number) => { this.firstVisibleIndex = start; })
@@ -2585,6 +2587,7 @@ struct ThreadPage {
       .onScrollStop(() => { this.userScrolling = false; this.markCurrentRead(); })
       .onAreaChange(() => { this.follow.resized(); this.scheduleFollowScroll(); })
       }.width('100%').height('100%')
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         .refreshOffset(64).pullToRefresh(this.loaded && this.hasMoreHistory && !this.historyLoading)
         .onRefreshing(() => { this.pullOlderHistory(); })
 
@@ -2789,6 +2792,7 @@ struct ThreadPage {
         })
       }.layoutWeight(1).width('100%')
       }.layoutWeight(1).width('100%').borderRadius({ topLeft: 28, topRight: 28 }).backgroundColor(this.color('card')).clip(true)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
 
     }
     .width('100%')

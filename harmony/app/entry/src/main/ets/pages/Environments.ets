@@ -17,5 +17,6 @@ struct EnvironmentsPage {
   build() {
     Column() { EnvironmentPanel({ routed: true }) }
       .width('100%').height('100%').padding({ left: 16, right: 16 }).backgroundColor(ThemeRuntime.color(this.themeKey, 'screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

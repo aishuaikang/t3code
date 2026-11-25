@@ -312,6 +312,7 @@ struct BrowserPage {
       }
       if (this.error) { Row({ space: 8 }) { Text(this.error).fontSize(this.font(12)).fontColor(this.color('danger')).layoutWeight(1); this.icon('refresh', '重新连接浏览器', () => { this.authFailures = 0; this.startStream(); }); }.padding(12).width('100%') }
     }.width('100%').height('100%').backgroundColor(this.color('screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .bindSheet($$this.dialogOpen, this.dialogSheet(), { systemMaterial: immersiveMaterial('popup'), height: SheetSize.FIT_CONTENT, showClose: false, dragBar: false, shouldDismiss: () => { this.answerDialog(false); } })
   }
 }

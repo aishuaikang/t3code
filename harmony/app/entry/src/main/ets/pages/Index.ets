@@ -1390,6 +1390,7 @@ struct Index {
         .scrollBarWidth(2)
         .divider(this.filterIndex === 3 ? { strokeWidth: 0.5, color: this.color('border'), startMargin: 54, endMargin: 16 } : undefined)
         .width('100%').contentEndOffset(this.searchOpen ? 16 : 96)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         }.layoutWeight(1).width('100%').borderRadius({ topLeft: 28, topRight: 28 }).backgroundColor(this.color('card')).clip(true)
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         .bindSheet($$this.renameOpen, this.renameSheet(), { systemMaterial: immersiveMaterial('popup'), height: SheetSize.FIT_CONTENT, title: { title: '重命名会话' },

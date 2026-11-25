@@ -694,7 +694,7 @@ struct ImagePreviewPage {
     }.width('100%').padding(16)
   }
   build() {
-    Stack({ alignContent: Alignment.Center }) {
+    Stack({ alignContent: Alignment.Top }) {
       Swiper(this.swiper) {
         ForEach(this.gallery, (_image: PreviewImage, index: number) => {
           Stack() {
@@ -715,7 +715,7 @@ struct ImagePreviewPage {
             if (index === this.imageIndex && (this.loading || this.busy)) { LoadingProgress().width(32).height(32).color('#FFFFFF').hitTestBehavior(HitTestMode.Block) }
           }.width('100%').height('100%').clip(true)
         }, (_image: PreviewImage, index: number) => String(index))
-      }.width('100%').height('100%').index(this.imageIndex).loop(false).indicator(false).duration(180)
+      }.width('100%').height(this.viewportHeight > 1 ? this.viewportHeight : '100%').index(this.imageIndex).loop(false).indicator(false).duration(180)
         .disableSwipe(this.commenting || this.annotating || this.zoom > 1 || this.busy || this.extrasBusy || !!this.panel).onChange((index: number) => { this.selectImage(index); })
         .gesture(GestureGroup(GestureMode.Parallel,
           PinchGesture().onActionStart(() => { this.startZoom = this.zoom; }).onActionUpdate((event: GestureEvent) => {

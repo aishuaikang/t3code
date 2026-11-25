@@ -245,6 +245,7 @@ export struct EnvironmentPanel {
           }
         }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, bottom: 24 })
       }.layoutWeight(1).width('100%').align(Alignment.TopStart)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }.width('100%').layoutWeight(1)
   }
 }

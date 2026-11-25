@@ -236,6 +236,8 @@ struct SettingsPage {
           }
         }.padding({ left: 20, right: 20, bottom: 28 }).width('100%')
       }.layoutWeight(1).align(Alignment.TopStart).width('100%')
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }.width('100%').height('100%').backgroundColor(this.color('screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

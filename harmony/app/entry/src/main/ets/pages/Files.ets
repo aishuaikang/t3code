@@ -320,6 +320,7 @@ struct FilesPage {
               MarkdownText({ content: this.file.contents, cwd: this.cwd, environmentId: this.environmentId, threadId: this.threadId,
                 baseDir: this.selectedPath.includes('/') ? this.selectedPath.substring(0, this.selectedPath.lastIndexOf('/')) : '' })
             }.layoutWeight(1).width('100%').align(Alignment.TopStart).padding({ left: 16, right: 16 })
+              .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
           } else {
             SourceFileText({ contents: this.file.contents, fontSize: this.sizes.codeFontSize, initialLine: this.initialLine,
               wrap: this.sizes.codeWordBreak, foreground: this.color('foreground'), muted: this.color('foreground-muted') })
@@ -353,8 +354,10 @@ struct FilesPage {
               }
             }, (entry: FileEntry) => entry.path + ':' + entry.kind)
           }.layoutWeight(1).width('100%')
+            .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
         }
       }
     }.width('100%').height('100%').backgroundColor(this.color('screen'))
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }
