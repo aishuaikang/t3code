@@ -71,3 +71,85 @@ test('a failed system-bar update does not prevent the next theme from applying',
  fail=false;await ThemeRuntime.syncWindow();assert.equal(AppStorage.values.get('windowError'),'');
  ThemeRuntime.detachWindow();const count=backgrounds.length;await ThemeRuntime.syncWindow();assert.equal(backgrounds.length,count);
 });
+test('settings summaries receive the saved mode even when the resolved palette does not change',async()=>{
+ ThemeRuntime.configurationChanged(1);
+ await ThemeRuntime.save({light:'t3-code',dark:'t3-code',mode:'system'});
+ const key=AppStorage.values.get('themeKey');
+ await ThemeRuntime.save({light:'t3-code',dark:'t3-code',mode:'light'});
+ assert.equal(AppStorage.values.get('themeKey'),key);
+ assert.equal(AppStorage.values.get('themeSelection').mode,'light');
+ fail=true;
+ try { await assert.rejects(ThemeRuntime.save({light:'t3-code',dark:'t3-code',mode:'dark'})); }
+ finally { fail=false; }
+ assert.equal(AppStorage.values.get('themeSelection').mode,'light');
+ await ThemeRuntime.reload();
+ assert.equal(AppStorage.values.get('themeSelection').mode,'light');
+});
+
+test('the image viewer keeps a black edge-to-edge surface and light system controls, then restores the current theme',async()=>{
+ const backgrounds=[],bars=[];
+ await ThemeRuntime.attachWindow({setWindowBackgroundColor:value=>backgrounds.push(value),setWindowSystemBarProperties:async value=>bars.push(value)});
+ await ThemeRuntime.setImagePreview(true);
+ assert.equal(backgrounds.at(-1),'#000000');
+ assert.equal(bars.at(-1).statusBarContentColor,'#FFFFFFFF');
+ assert.equal(bars.at(-1).navigationBarContentColor,'#FFFFFFFF');
+ assert.equal(bars.at(-1).navigationBarColor,'#00000000');
+ await ThemeRuntime.save({light:'ocean',dark:'ember',mode:'light'});await ThemeRuntime.syncWindow();
+ assert.equal(backgrounds.at(-1),'#000000');
+ await ThemeRuntime.setImagePreview(false);
+ assert.equal(backgrounds.at(-1),ThemeRuntime.color('ocean-light','screen'));
+ assert.equal(bars.at(-1).navigationBarContentColor,'#FF191919');
+ ThemeRuntime.detachWindow();
+});
+
+
+function luminance(hex){
+ assert.match(hex,/^#[0-9a-f]{6}$/i);
+ const [r,g,b]=hex.slice(1).match(/../g).map(x=>parseInt(x,16)/255).map(c=>c<=0.04045?c/12.92:((c+0.055)/1.055)**2.4);
+ return 0.2126*r+0.7152*g+0.0722*b+0.05;
+}
+const contrast=(a,b)=>Math.max(luminance(a),luminance(b))/Math.min(luminance(a),luminance(b));
+
+test('chat messages have visible surfaces and readable body, secondary text and links in every shipped appearance',async()=>{
+ await ThemeRuntime.initialize(context);
+ for(const {id,scheme} of palettes){
+  const key=`${id}-${scheme}`,color=role=>ThemeRuntime.color(key,role);
+  assert.notEqual(color('chat-user'),color('chat-reply'),key);
+  assert.ok(contrast(color('chat-outline'),color('card'))>=1.8,`${key} edge`);
+  for(const role of ['chat-user','chat-reply']){
+   assert.ok(contrast(color(role),color('card'))>=1.2,`${key} ${role} surface`);
+   for(const text of ['foreground','md-body','chat-secondary','chat-link']){
+    assert.ok(contrast(color(role),color(text))>=4.5,`${key} ${role} ${text}`);
+   }
+  }
+ }
+});
+
+test('toolbar titles and small glass labels remain readable on chat surfaces across every palette',async()=>{
+ await ThemeRuntime.initialize(context);
+ for(const {id,scheme} of palettes){
+  const color=role=>ThemeRuntime.color(`${id}-${scheme}`,role);
+  for(const surface of ['screen','card','chat-reply','chat-user']){
+   for(const text of ['foreground','glass-label']){
+    assert.ok(contrast(color(text),color(surface))>=4.5,`${id}-${scheme}: ${text} on ${surface}`);
+   }
+  }
+ }
+});
+
+test('both loading gradient stops keep the theme hue and a readable label in every appearance', async()=>{
+ await ThemeRuntime.initialize(context);
+ const channelOrder=hex=>{
+  const rgb=hex.slice(1).match(/../g).map(c=>parseInt(c,16));
+  return [0,1,2].sort((a,b)=>rgb[b]-rgb[a]);
+ };
+ for(const {id,scheme} of palettes){
+  const color=role=>ThemeRuntime.color(`${id}-${scheme}`,role);
+  assert.notEqual(color('progress-start'),color('progress-end'),`${id}-${scheme} gradient`);
+  for(const stop of ['progress-start','progress-end']){
+   if(id!=='t3-code')assert.deepEqual(channelOrder(color(stop)),channelOrder(color('primary')),`${id}-${scheme} hue at ${stop}`);
+   assert.ok(contrast(color(stop),color('progress-foreground'))>=4.5,`${id}-${scheme} loading text on ${stop}`);
+   assert.ok(contrast(color(stop),color('card'))>=3,`${id}-${scheme} loading edge at ${stop}`);
+  }
+ }
+});

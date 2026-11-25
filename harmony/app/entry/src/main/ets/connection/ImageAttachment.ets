@@ -1,10 +1,11 @@
 import fs from '@ohos.file.fs';
 import http from '@ohos.net.http';
 import { RpcClient } from './Rpc';
+import { attachmentMime, fileUploadLimit } from '../model/FileAttachments';
 
 export interface UploadedImage { type: string; id: string; name: string; mimeType: string; sizeBytes: number; }
 interface DeleteRequest { attachmentId: string; }
-interface UploadRequest { name: string; mimeType: string; sizeBytes: number; }
+interface UploadRequest { type?: string; name: string; mimeType: string; sizeBytes: number; }
 interface UploadUrl { attachmentId: string; relativeUrl: string; }
 export function imageMime(bytes: Uint8Array): string {
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
@@ -14,36 +15,45 @@ export function imageMime(bytes: Uint8Array): string {
     bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
   throw new Error('请选择 PNG、JPEG、GIF 或 WebP 图片');
 }
-export async function uploadImage(rpc: RpcClient, baseUrl: string, uri: string, originalName: string = ''): Promise<UploadedImage> {
+export async function uploadImage(rpc: RpcClient, baseUrl: string, uri: string, originalName: string = '',
+  onProgress: (percent: number) => void = () => {}, kind: string = 'image', maxBytes: number = 10 * 1024 * 1024): Promise<UploadedImage> {
+  const limit = kind === 'file' ? fileUploadLimit(maxBytes) : 10 * 1024 * 1024;
+  if (limit === 0) throw new Error('当前环境暂不支持文件附件');
+  onProgress(0);
   const file = await fs.open(uri, fs.OpenMode.READ_ONLY);
   let bytes: ArrayBuffer;
   try {
     const stat = await fs.stat(file.fd);
-    if (stat.size < 1 || stat.size > 10 * 1024 * 1024) throw new Error('图片须小于或等于 10 MB 且不能为空');
+    if (stat.size < 1 || stat.size > limit) throw new Error(`附件须小于或等于 ${Math.round(limit / 1024 / 1024 * 10) / 10} MB 且不能为空`);
     bytes = new ArrayBuffer(stat.size);
     let offset = 0;
     while (offset < stat.size) {
-      const chunk = new ArrayBuffer(stat.size - offset);
+      const chunk = new ArrayBuffer(Math.min(64 * 1024, stat.size - offset));
       const count = await fs.read(file.fd, chunk, { offset: offset, length: chunk.byteLength });
-      if (count <= 0) throw new Error('图片读取未完成，请重新选择');
+      if (count <= 0) throw new Error('附件读取未完成，请重新选择');
       new Uint8Array(bytes).set(new Uint8Array(chunk, 0, count), offset);
       offset += count;
     }
   } finally { await fs.close(file); }
-  const mimeType = imageMime(new Uint8Array(bytes));
+  const mimeType = kind === 'file' ? attachmentMime(originalName) : imageMime(new Uint8Array(bytes));
   const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType.substring(6);
   const name = originalName.trim();
-  const request: UploadRequest = { name: name.length > 0 && name.length <= 255 ? name : `image.${extension}`, mimeType: mimeType, sizeBytes: bytes.byteLength };
+  const request: UploadRequest = { name: name.length > 0 && name.length <= 255 ? name : kind === 'file' ? 'attachment' : `image.${extension}`, mimeType: mimeType, sizeBytes: bytes.byteLength };
+  if (kind === 'file') request.type = 'file';
   const upload = await rpc.call<UploadUrl>('attachments.createUploadUrl', request);
   const client = http.createHttp();
   try {
+    client.on('dataSendProgress', (event) => {
+      if (event.totalSize > 0) onProgress(Math.min(99, Math.floor(event.sendSize * 100 / event.totalSize)));
+    });
     if (!upload.relativeUrl.startsWith('/') || upload.relativeUrl.startsWith('//')) throw new Error('上传地址无效');
     const response = await client.request(baseUrl.replace(/\/$/, '') + upload.relativeUrl, {
       method: http.RequestMethod.POST, header: { 'Content-Type': mimeType }, extraData: bytes,
       connectTimeout: 15000, readTimeout: 60000
     });
-    if (response.responseCode < 200 || response.responseCode >= 300) throw new Error(`图片上传失败 (${response.responseCode})`);
-    return { type: 'image', id: upload.attachmentId, name: request.name, mimeType: mimeType, sizeBytes: bytes.byteLength };
+    if (response.responseCode < 200 || response.responseCode >= 300) throw new Error(`附件上传失败 (${response.responseCode})`);
+    onProgress(100);
+    return { type: kind, id: upload.attachmentId, name: request.name, mimeType: mimeType, sizeBytes: bytes.byteLength };
   } catch (error) {
     const deletion: DeleteRequest = { attachmentId: upload.attachmentId };
     try { await rpc.call('attachments.delete', deletion); } catch (_) {}

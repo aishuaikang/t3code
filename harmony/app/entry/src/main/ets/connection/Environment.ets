@@ -7,6 +7,7 @@
  *   POST /api/auth/websocket-ticket             → 短时 ticket
  *   WS   /ws?wsTicket=…&clientSurface=mobile…
  */
+import type { ServerConfig } from '../model/Models';
 import http from '@ohos.net.http';
 import util from '@ohos.util';
 import { RpcClient } from './Rpc';
@@ -17,6 +18,7 @@ export interface EnvironmentDescriptor {
   environmentId: string;
   label?: string;
 }
+export interface PreviewAccess { httpBase: string; wsBase: string; query: Record<string, string>; credentials: boolean; }
 
 class EnvironmentNetworkError extends Error {}
 
@@ -24,6 +26,8 @@ export class PreparedConnection {
   httpBaseUrl: string;
   socketUrl: string = '';
   rpc: RpcClient = new RpcClient();
+  liveConfig: ServerConfig | null = null;
+  pendingConfig: Promise<ServerConfig | null> | null = null;
   descriptor: EnvironmentDescriptor;
   private bearer: string;
   private method: string;
@@ -46,6 +50,19 @@ export class PreparedConnection {
   matchesSaved(saved: SavedEnvironment): boolean {
     return saved.environmentId === this.descriptor.environmentId &&
       (this.method === 'ssh' ? saved.ssh !== undefined && saved.connectionId === this.connectionId : saved.ssh === undefined);
+  }
+
+  async loadSnapshot<T extends object>(path: string, timeoutMs: number = 20000): Promise<T | null> {
+    this.requireOpen();
+    try {
+      const response = await httpJson(http.RequestMethod.GET, endpointOf(this.httpBaseUrl, path),
+        null, `Bearer ${this.bearer}`, 'application/json', timeoutMs, '2');
+      this.requireOpen();
+      return response.json as T | null;
+    } catch (_) {
+      // Proxies and older servers may only support the WebSocket snapshot.
+      return null;
+    }
   }
 
   async openRpc(): Promise<RpcClient> {
@@ -72,6 +89,23 @@ export class PreparedConnection {
     return rpc;
   }
 
+  async openPreviewAccess(): Promise<PreviewAccess> {
+    this.requireOpen();
+    if (this.recovering !== null) await this.recovering;
+    const version = this.transportVersion;
+    let ticket: string;
+    try { ticket = await issueWebSocketTicket(this.httpBaseUrl, this.bearer, true); }
+    catch (error) {
+      if (!(error instanceof EnvironmentNetworkError) || this.sshTarget === undefined) throw new Error(error instanceof Error ? error.message : String(error));
+      await this.recoverSsh(version); ticket = await issueWebSocketTicket(this.httpBaseUrl, this.bearer, true);
+    }
+    this.requireOpen();
+    const base = endpointOf(this.httpBaseUrl, '/api/preview-stream');
+    const query: Record<string, string> = {}; query['wsTicket'] = ticket;
+    const access: PreviewAccess = { httpBase: base, wsBase: base.replace(/^http/, 'ws'), query: query, credentials: false };
+    return access;
+  }
+
   private requireOpen(): void {
     if (this.closed) throw new Error('连接已关闭');
   }
@@ -88,7 +122,7 @@ export class PreparedConnection {
   private async rebuildSsh(): Promise<void> {
     const target = this.sshTarget;
     if (target === undefined) return;
-    const bootstrap = await SshEnvironment.ensure(target, '', (_message: string) => {});
+    const bootstrap = await SshEnvironment.ensure(target, '', (_message: string) => {}, true);
     try {
       this.requireOpen();
       const descriptor = await fetchDescriptor(bootstrap.httpBaseUrl);
@@ -97,7 +131,7 @@ export class PreparedConnection {
       this.httpBaseUrl = bootstrap.httpBaseUrl;
       this.transportVersion++;
     } catch (error) {
-      try { await SshEnvironment.disconnect(target); } catch (_) {}
+      try { await SshEnvironment.disconnect(target, false); } catch (_) {}
       throw new Error(error instanceof Error ? error.message : String(error));
     }
   }
@@ -113,7 +147,7 @@ export class PreparedConnection {
     if (this.sshTarget !== undefined) {
       const target = this.sshTarget;
       const ssh: SavedSshTarget = { hostname: target.hostname, port: target.port,
-        username: target.username, hostFingerprint: target.hostFingerprint, serverPort: target.serverPort! };
+        username: target.username, hostFingerprint: target.hostFingerprint, serverHost: target.serverHost, serverPort: target.serverPort! };
       const saved: SavedEnvironment = { environmentId: this.descriptor.environmentId,
         connectionId: this.connectionId, httpBaseUrl: '', ssh: ssh,
         label: (this.descriptor.label ?? this.descriptor.environmentId) + ' · SSH', updatedAt: new Date().toISOString() };
@@ -130,6 +164,7 @@ export class PreparedConnection {
 
 export class EnvironmentSession {
   static current: PreparedConnection | null = null;
+  static homeGeneration: number = 0;
 }
 
 interface HttpJsonResult {
@@ -166,10 +201,19 @@ function endpointOf(baseUrl: string, path: string): string {
 }
 
 function httpJson(method: http.RequestMethod, url: string, body: string | null,
-  authorization: string | null, contentType: string = 'application/json'): Promise<HttpJsonResult> {
+  authorization: string | null, contentType: string = 'application/json', timeoutMs: number = 10000,
+  orchestrationProtocol: string | null = null): Promise<HttpJsonResult> {
   return new Promise<HttpJsonResult>((resolve, reject) => {
     const client = http.createHttp();
+    let settled = false;
+    const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      reject(new EnvironmentNetworkError('网络请求超时，请检查环境地址和连接'));
+    }, timeoutMs);
     const header: Record<string, string> = { 'Content-Type': contentType };
+    if (orchestrationProtocol !== null) header['x-t3-orchestration-protocol'] = orchestrationProtocol;
     if (authorization !== null) {
       header['Authorization'] = authorization;
     }
@@ -177,9 +221,12 @@ function httpJson(method: http.RequestMethod, url: string, body: string | null,
       method: method,
       header: header,
       extraData: body ?? undefined,
-      connectTimeout: 10000,
-      readTimeout: 10000
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs
     }, (error, response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
       client.destroy();
       if (error) {
         reject(new EnvironmentNetworkError('网络请求失败，请检查环境地址和连接'));
@@ -234,9 +281,9 @@ async function bootstrapBearer(httpBaseUrl: string, pairingToken: string): Promi
   return parsed.access_token;
 }
 
-async function issueWebSocketTicket(httpBaseUrl: string, bearer: string): Promise<string> {
+async function issueWebSocketTicket(httpBaseUrl: string, bearer: string, media: boolean = false): Promise<string> {
   const response = await httpJson(http.RequestMethod.POST,
-    endpointOf(httpBaseUrl, '/api/auth/websocket-ticket'), '{}', `Bearer ${bearer}`);
+    endpointOf(httpBaseUrl, '/api/auth/websocket-ticket') + (media ? '?use=media' : ''), '{}', `Bearer ${bearer}`);
   if (response.json === null) {
     throw new Error('websocket ticket 失败');
   }
@@ -251,7 +298,7 @@ function socketUrlOf(wsBaseUrl: string, ticket: string, method: string): string 
   const base = wsBaseUrl.endsWith('/') ? wsBaseUrl : wsBaseUrl + '/';
   const separator = base.includes('?') ? '&' : '?';
   return `${base}ws${separator}wsTicket=${encodeURIComponent(ticket)}` +
-    `&clientSurface=mobile&clientDeviceType=phone&clientOs=harmony&connectionMethod=${method}`;
+    `&orchestrationProtocol=2&clientSurface=mobile&clientDeviceType=phone&clientOs=harmony&connectionMethod=${method}`;
 }
 
 export async function connectEnvironment(target: SshTarget, t3PackageSpec: string,
@@ -259,7 +306,10 @@ export async function connectEnvironment(target: SshTarget, t3PackageSpec: strin
   if (target.serverPort !== undefined && !target.pairingToken?.trim()) {
     throw new Error('请输入该 T3 服务的配对令牌');
   }
-  const bootstrap = await SshEnvironment.ensure(target, t3PackageSpec, onStatus);
+  const tunnel: SshTarget = { hostname: target.hostname, port: target.port, username: target.username,
+    password: target.password, hostFingerprint: target.hostFingerprint, alias: target.alias, serverHost: target.serverHost, serverPort: target.serverPort };
+  const bootstrap = await SshEnvironment.ensure(tunnel, t3PackageSpec, onStatus);
+  tunnel.serverPort = bootstrap.remotePort;
   try {
     onStatus('读取环境…');
     const descriptor = await fetchDescriptor(bootstrap.httpBaseUrl);
@@ -267,19 +317,16 @@ export async function connectEnvironment(target: SshTarget, t3PackageSpec: strin
     let pairingToken = target.pairingToken?.trim() ?? '';
     if (!pairingToken) {
       onStatus('签发配对令牌…');
-      pairingToken = await SshEnvironment.issuePairingToken() ?? '';
+      pairingToken = await SshEnvironment.issuePairingToken(tunnel) ?? '';
     }
     if (!pairingToken) throw new Error('无法签发配对令牌（检查远端 t3 可用性）');
     const bearer = await bootstrapBearer(bootstrap.httpBaseUrl, pairingToken);
-    const connection = new PreparedConnection(bootstrap.httpBaseUrl, descriptor, bearer, 'ssh', {
-      hostname: target.hostname, port: target.port, username: target.username, password: target.password,
-      hostFingerprint: target.hostFingerprint, serverPort: bootstrap.remotePort
-    });
+    const connection = new PreparedConnection(bootstrap.httpBaseUrl, descriptor, bearer, 'ssh', tunnel);
     onStatus('建立会话…');
     connection.rpc = await connection.openRpc();
     return connection;
   } catch (error) {
-    try { await SshEnvironment.disconnect(target); } catch (_) {}
+    try { await SshEnvironment.disconnect(tunnel); } catch (_) {}
     throw new Error(error instanceof Error ? error.message : String(error));
   }
 }
@@ -317,7 +364,7 @@ export async function restoreSshEnvironment(saved: SavedEnvironment, credentials
   const ssh = saved.ssh;
   if (ssh === undefined || !saved.connectionId) throw new Error('SSH 连接配置缺失，请重新连接');
   const target: SshTarget = { hostname: ssh.hostname, port: ssh.port, username: ssh.username,
-    password: credentials.password, hostFingerprint: ssh.hostFingerprint, serverPort: ssh.serverPort };
+    password: credentials.password, hostFingerprint: ssh.hostFingerprint, serverHost: ssh.serverHost, serverPort: ssh.serverPort };
   const bootstrap = await SshEnvironment.ensure(target, '', onStatus);
   try {
     onStatus('恢复已保存连接…');

@@ -30,3 +30,15 @@ export function markdownFileLink(href: string, cwd: string, baseDir: string = ''
   if (parts.length === 0) return null;
   return Number.isInteger(line) && line > 0 ? { path: parts.join('/'), line: line } : { path: parts.join('/') };
 }
+
+export interface MarkdownImageFile { path: string; name: string; }
+export function markdownImageFileLink(href: string, cwd: string, baseDir: string = ''): MarkdownImageFile | null {
+  let value = href.trim();
+  if (value.startsWith('<') && value.endsWith('>')) value = value.slice(1, -1);
+  if (/^file:\/\/\//i.test(value)) value = value.slice(7);
+  if (value.startsWith('//')) return null;
+  const absolute = value.startsWith('/');
+  const target = markdownFileLink(value, absolute ? '/' : cwd, baseDir);
+  if (target === null || target.line !== undefined || !/\.(png|jpe?g|gif|webp|avif|bmp|heic|heif|tiff?|svg)$/i.test(target.path)) return null;
+  return { path: (absolute ? '' : cwd.replace(/\/+$/, '')) + '/' + target.path, name: target.path.split('/').pop() ?? target.path };
+}

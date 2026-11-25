@@ -10,6 +10,7 @@ export interface SshTarget {
   password: string;
   hostFingerprint: string;
   alias?: string;
+  serverHost?: string;
   serverPort?: number;
   pairingToken?: string;
 }
@@ -117,12 +118,29 @@ function parseLaunchResult(stdout: string): LaunchResult {
 }
 
 export class SshEnvironment {
+  // The native bridge has one SSH session. A retired connection must never release its successor.
+  private static owner: SshTarget | null = null;
+  private static nativeWork: Promise<void> = Promise.resolve();
+  private static exclusive<T>(run: () => Promise<T>): Promise<T> {
+    const result = SshEnvironment.nativeWork.then(run);
+    SshEnvironment.nativeWork = result.then(() => {}, () => {});
+    return result;
+  }
 
   static async ensure(target: SshTarget, t3PackageSpec: string,
-    onStatus: (message: string) => void): Promise<SshEnvironmentBootstrap> {
+    onStatus: (message: string) => void, recovering: boolean = false): Promise<SshEnvironmentBootstrap> {
+    return SshEnvironment.exclusive(() => SshEnvironment.open(target, t3PackageSpec, onStatus, recovering));
+  }
+
+  private static async open(target: SshTarget, t3PackageSpec: string,
+    onStatus: (message: string) => void, recovering: boolean): Promise<SshEnvironmentBootstrap> {
     if (target.serverPort !== undefined && (!Number.isInteger(target.serverPort) ||
       target.serverPort < 1 || target.serverPort > 65535)) throw new Error('请输入有效的 T3 服务端口');
+    const serverHost = target.serverHost?.trim() || '127.0.0.1';
+    if (serverHost.length > 253 || /[\s\/\\?#@\u0000]/.test(serverHost)) throw new Error('请输入 T3 服务的主机名或 IP 地址');
+    if (recovering && SshEnvironment.owner !== target) throw new Error('SSH 连接已切换');
     const ssh = SshBridge.ensure();
+    SshEnvironment.owner = target;
     try {
       onStatus('连接 SSH 主机…');
       await ssh.connect(target.hostname, target.port, target.username, target.password, target.hostFingerprint);
@@ -139,7 +157,7 @@ export class SshEnvironment {
 
       onStatus('建立隧道…');
       const localPort = 20000 + Math.floor(Math.random() * 20000);
-      await ssh.openForward(target.hostname, localPort, parsed.remotePort);
+      await ssh.openForward(serverHost, localPort, parsed.remotePort);
 
       const bootstrap: SshEnvironmentBootstrap = {
         remotePort: parsed.remotePort,
@@ -151,12 +169,18 @@ export class SshEnvironment {
       };
       return bootstrap;
     } catch (error) {
+      if (!recovering) SshEnvironment.owner = null;
       await ssh.disconnect();
       throw new Error(error instanceof Error ? error.message : String(error));
     }
   }
 
-  static async issuePairingToken(): Promise<string | null> {
+  static issuePairingToken(target: SshTarget): Promise<string | null> {
+    return SshEnvironment.exclusive(() => SshEnvironment.pair(target));
+  }
+
+  private static async pair(target: SshTarget): Promise<string | null> {
+    if (SshEnvironment.owner !== target) throw new Error('SSH 连接已切换');
     const ssh = SshBridge.ensure();
     const result: SshExecResult = await ssh.exec('sh -l -s', pairingScriptBody());
     if (result.exitCode !== 0) {
@@ -172,7 +196,11 @@ export class SshEnvironment {
     }
   }
 
-  static async disconnect(_target: SshTarget): Promise<void> {
-    await SshBridge.ensure().disconnect();
+  static disconnect(target: SshTarget, release: boolean = true): Promise<void> {
+    return SshEnvironment.exclusive(async (): Promise<void> => {
+      if (SshEnvironment.owner !== target) return;
+      if (release) SshEnvironment.owner = null;
+      await SshBridge.ensure().disconnect();
+    });
   }
 }

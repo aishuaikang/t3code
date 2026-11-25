@@ -29,7 +29,7 @@ test('custom code and terminal sizes stay independent, and reset resumes base-si
 test('code geometry and input normalization match iOS boundaries',()=>{
  for(const value of [NaN,Infinity,-100,0,8,8.5,11,12,16,18,100]){
   assert.equal(native.normalizeBaseFontSize(value),mobile.normalizeBaseFontSize(value));
-  assert.equal(native.normalizeCodeFontSize(value),mobile.normalizeCodeFontSize(value));
+  assert.equal(native.normalizeCodeFontSize(value),mobile.resolveMobileCodeSurface(value).fontSize);
   assert.deepEqual(native.codeMetrics(value),mobile.resolveMobileCodeSurface(value));
  }
 });

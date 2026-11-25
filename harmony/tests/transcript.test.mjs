@@ -15,10 +15,11 @@ test('completed run hides process, preserves final attachments, and reports elap
  assert.equal(rows[2].attachments[0].name,'result.md');
 });
 test('run and tool segment expand independently, individual tools keep their output',()=>{
- let rows=render(undefined,undefined,undefined,['turn:t']);
+ const foldId=render().find(row=>row.kind==='turn').id;
+ let rows=render(undefined,undefined,undefined,[foldId]);
  assert.deepEqual(rows.map(r=>r.kind),['message','turn','message','tools','message']);
  const group=rows.find(r=>r.kind==='tools');
- rows=render(undefined,undefined,undefined,['turn:t',group.id]);
+ rows=render(undefined,undefined,undefined,[foldId,group.id]);
  assert.deepEqual(rows.filter(r=>r.kind==='tool').map(r=>r.detail),['output one','output two']);
 });
 test('active process remains visible then collapses after completion',()=>{

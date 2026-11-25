@@ -108,23 +108,24 @@ napi_value RunAsync(napi_env env, std::function<NativeResult()> action) {
 
 // —— NAPI 表面 ——
 
+bool ReadString(napi_env env, napi_value value, std::string& out, size_t limit) {
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok ||
+      length == 0 || length > limit) return false;
+  out.resize(length);
+  return napi_get_value_string_utf8(env, value, out.data(), length + 1, nullptr) == napi_ok;
+}
+
 napi_value Connect(napi_env env, napi_callback_info info) {
   size_t argc = 5;
   napi_value argv[5];
   napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
   std::string host, username, secret, fingerprint;
   int32_t port = 0;
-  auto read_string = [env](napi_value value, std::string& out, size_t limit) {
-    size_t length = 0;
-    if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok ||
-        length == 0 || length > limit) return false;
-    out.resize(length);
-    return napi_get_value_string_utf8(env, value, out.data(), length + 1, nullptr) == napi_ok;
-  };
-  if (argc != 5 || !read_string(argv[0], host, 255) ||
+  if (argc != 5 || !ReadString(env, argv[0], host, 255) ||
       napi_get_value_int32(env, argv[1], &port) != napi_ok || port < 1 || port > 65535 ||
-      !read_string(argv[2], username, 255) || !read_string(argv[3], secret, 65536) ||
-      !read_string(argv[4], fingerprint, 50) || fingerprint.size() != 50 ||
+      !ReadString(env, argv[2], username, 255) || !ReadString(env, argv[3], secret, 65536) ||
+      !ReadString(env, argv[4], fingerprint, 50) || fingerprint.size() != 50 ||
       host.find('\0') != std::string::npos || username.find('\0') != std::string::npos) {
     napi_throw_error(env, nullptr, "SSH requires host, port, username, password and SHA256 host fingerprint");
     return nullptr;
@@ -171,17 +172,19 @@ napi_value OpenForward(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value argv[3];
   napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  std::string remote_host;
   int32_t local_port = 0, remote_port = 0;
-  if (argc != 3 || napi_get_value_int32(env, argv[1], &local_port) != napi_ok ||
+  if (argc != 3 || !ReadString(env, argv[0], remote_host, 253) || remote_host.find('\0') != std::string::npos ||
+      napi_get_value_int32(env, argv[1], &local_port) != napi_ok ||
       napi_get_value_int32(env, argv[2], &remote_port) != napi_ok ||
       local_port < 1 || local_port > 65535 || remote_port < 1 || remote_port > 65535) {
-    napi_throw_error(env, nullptr, "SSH forwarding requires valid local and remote ports");
+    napi_throw_error(env, nullptr, "SSH forwarding requires a destination host and valid ports");
     return nullptr;
   }
 
-  return RunAsync(env, [local_port, remote_port] {
+  return RunAsync(env, [remote_host, local_port, remote_port] {
     return NativeResult{NativeResult::ForwardId,
-      static_cast<int64_t>(g_session.OpenForward(local_port, remote_port)), {}};
+      static_cast<int64_t>(g_session.OpenForward(remote_host, local_port, remote_port)), {}};
   });
 }
 

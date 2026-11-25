@@ -1,3 +1,4 @@
+import { ChatGlass } from './ChatGlass';
 import { modelOptionChoices, modelOptionValue, withModelOption } from '../model/ModelOptions';
 import router from '@ohos.router';
 import util from '@ohos.util';
@@ -157,11 +158,13 @@ struct TaskModel {
 
   build() {
     Column({ space: 12 }) {
-      Row({ space: 8 }) {
-        Button('返回').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.busy).onClick(() => { if (this.editingOptions) this.editingOptions = false; else router.back(); })
-        Text(this.editingOptions ? '模型高级选项' : '任务设置').fontSize(this.font(20)).fontColor(this.color('foreground')).layoutWeight(1)
-        Button('刷新').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.loading && !this.busy).onClick(() => { this.load(); })
-      }.width('100%')
+      ChatGlass() {
+        Row({ space: 8 }) {
+          Button('返回').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.busy).onClick(() => { if (this.editingOptions) this.editingOptions = false; else router.back(); })
+          Text(this.editingOptions ? '模型高级选项' : '任务设置').fontSize(this.font(20)).fontColor(this.color('foreground')).layoutWeight(1)
+          Button('刷新').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.loading && !this.busy).onClick(() => { this.load(); })
+        }.width('100%').padding({ left: 6, right: 6, top: 4, bottom: 4 })
+      }
       Text(this.current === null ? '正在读取当前模型…' : `当前：${this.current.instanceId} · ${this.current.model}`)
         .fontSize(this.font(13)).fontColor(this.color('foreground-muted')).width('100%')
       if (this.editingOptions) {

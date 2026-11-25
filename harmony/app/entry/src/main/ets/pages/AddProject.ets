@@ -1,3 +1,4 @@
+import { ChatGlass } from './ChatGlass';
 import { Typography, resolveTypography, scaledFontSize } from '../model/Typography';
 import { ThemeRuntime } from '../connection/ThemeRuntime';
 import router from '@ohos.router';
@@ -130,10 +131,12 @@ struct AddProject {
 
   build() {
     Column({ space: 12 }) {
-      Row() {
-        Button('返回').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.busy).onClick(() => { router.back(); })
-        Text('添加项目').fontSize(this.font(20)).fontColor(this.color('foreground')).layoutWeight(1).margin({ left: 12 })
-      }.width('100%')
+      ChatGlass() {
+        Row() {
+          Button('返回').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.busy).onClick(() => { router.back(); })
+          Text('添加项目').fontSize(this.font(20)).fontColor(this.color('foreground')).layoutWeight(1).margin({ left: 12 })
+        }.width('100%').padding({ left: 6, right: 6, top: 4, bottom: 4 })
+      }
       if (this.result) {
         Text(this.result).fontSize(this.font(18)).fontColor(this.color('primary')).width('100%')
         Text(this.path).fontColor(this.color('foreground-secondary')).width('100%')

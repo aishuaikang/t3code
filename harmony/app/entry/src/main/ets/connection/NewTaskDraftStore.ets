@@ -16,6 +16,7 @@ export interface CreateTaskCommand {
 }
 
 export interface NewTaskDraft {
+  useProjectDefault?: boolean;
   newWorktree?: boolean;
   worktreeRef?: string;
   branch?: string | null;

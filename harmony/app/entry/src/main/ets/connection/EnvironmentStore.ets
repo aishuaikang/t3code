@@ -1,4 +1,6 @@
 import asset from '@ohos.security.asset';
+import preferences from '@ohos.data.preferences';
+import common from '@ohos.app.ability.common';
 import util from '@ohos.util';
 import { BusinessError } from '@ohos.base';
 
@@ -7,6 +9,7 @@ export interface SavedSshTarget {
   port: number;
   username: string;
   hostFingerprint: string;
+  serverHost?: string;
   serverPort: number;
 }
 
@@ -17,11 +20,16 @@ export interface SshCredentials {
 
 export interface SavedEnvironment {
   connectionId?: string;
+  sshRole?: 'primary' | 'backup';
   ssh?: SavedSshTarget;
   environmentId: string;
   httpBaseUrl: string;
   label: string;
   updatedAt: string;
+}
+
+export function routeAddress(saved: SavedEnvironment): string {
+  return saved.ssh ? `${saved.ssh.username}@${saved.ssh.hostname}:${saved.ssh.port}` : saved.httpBaseUrl;
 }
 
 function bytes(value: string): Uint8Array { return new util.TextEncoder().encodeInto(value); }
@@ -56,10 +64,50 @@ async function saveAsset(environment: SavedEnvironment, secret: string, id: stri
   await asset.add(attributes);
 }
 
-export async function loadEnvironments(): Promise<SavedEnvironment[]> {
+function routePreferences(context: common.Context): Promise<preferences.Preferences> {
+  return preferences.getPreferences(context, { name: 't3-ssh-routes' });
+}
+
+function routeOrder(prefs: preferences.Preferences, environmentId: string): string[] {
+  return prefs.getSync(environmentId, [] as string[]) as string[];
+}
+
+export async function setPrimarySshRoute(context: common.Context, saved: SavedEnvironment): Promise<void> {
+  if (!saved.ssh || !saved.connectionId) return;
+  const prefs = await routePreferences(context);
+  const previous = routeOrder(prefs, saved.environmentId);
+  prefs.putSync(saved.environmentId, [saved.connectionId, ...previous.filter(id => id !== saved.connectionId)]);
+  try { await prefs.flush(); }
+  catch (error) {
+    if (routeOrder(prefs, saved.environmentId)[0] === saved.connectionId) prefs.putSync(saved.environmentId, previous);
+    throw new Error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function loadEnvironments(context?: common.Context): Promise<SavedEnvironment[]> {
   const direct = await loadSaved(false);
   const ssh = await loadSaved(true);
-  return direct.concat(ssh).sort((a: SavedEnvironment, b: SavedEnvironment) => b.updatedAt.localeCompare(a.updatedAt));
+  const saved = direct.concat(ssh).sort((a: SavedEnvironment, b: SavedEnvironment) => b.updatedAt.localeCompare(a.updatedAt));
+  if (!ssh.length || !context) return saved;
+  // Route ordering is optional; the secure connection records remain usable if preferences are unavailable.
+  const prefs = await routePreferences(context).catch((): preferences.Preferences | null => null);
+  const groups = new Map<string, SavedEnvironment[]>();
+  for (const route of saved) {
+    if (!route.ssh || !route.connectionId) continue;
+    const group = groups.get(route.environmentId) ?? [];
+    group.push(route); groups.set(route.environmentId, group);
+  }
+  let changed = false;
+  groups.forEach((routes: SavedEnvironment[], environmentId: string) => {
+    const order: string[] = prefs ? routeOrder(prefs, environmentId) : [];
+    const ids = routes.map((route: SavedEnvironment) => route.connectionId!);
+    const added = ids.filter(id => !order.includes(id));
+    if (prefs && added.length) { prefs.putSync(environmentId, order.concat(added)); changed = true; }
+    const primary = order.find(id => ids.includes(id)) ?? ids[0];
+    if (routes.length > 1) routes.forEach((route: SavedEnvironment) => { route.sshRole = route.connectionId === primary ? 'primary' : 'backup'; });
+  });
+  if (changed && prefs) await prefs.flush().catch(() => {});
+  return saved;
 }
 
 async function loadSaved(ssh: boolean): Promise<SavedEnvironment[]> {
@@ -91,6 +139,14 @@ async function readSecret(id: string, ssh: boolean): Promise<string> {
   return decode(items[0].get(asset.Tag.SECRET));
 }
 
-export async function forgetEnvironment(id: string, ssh: boolean = false): Promise<void> {
-  await asset.remove(queryFor(id, ssh));
+export async function forgetEnvironment(saved: SavedEnvironment, context: common.Context): Promise<void> {
+  await asset.remove(queryFor(saved.connectionId ?? saved.environmentId, saved.ssh !== undefined));
+  if (saved.ssh && saved.connectionId) {
+    const prefs = await routePreferences(context).catch((): preferences.Preferences | null => null);
+    if (!prefs) return;
+    const order = routeOrder(prefs, saved.environmentId).filter(id => id !== saved.connectionId);
+    if (order.length) prefs.putSync(saved.environmentId, order);
+    else prefs.deleteSync(saved.environmentId);
+    await prefs.flush().catch(() => {});
+  }
 }

@@ -31,9 +31,13 @@ inline const char* AuthenticatePinned(LIBSSH2_SESSION* session, const std::strin
   const char* hash = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
   if (!hash || Fingerprint(reinterpret_cast<const unsigned char*>(hash)) != expected)
     return "SSH host fingerprint mismatch; password was not sent";
-  if (libssh2_userauth_password_ex(session, username.data(), static_cast<unsigned int>(username.size()),
-      password.data(), static_cast<unsigned int>(password.size()), nullptr) != 0)
-    return "SSH authentication failed";
-  return nullptr;
+  const int result = libssh2_userauth_password_ex(session, username.data(), static_cast<unsigned int>(username.size()),
+      password.data(), static_cast<unsigned int>(password.size()), nullptr);
+  switch (result) {
+    case 0: return nullptr;
+    case LIBSSH2_ERROR_TIMEOUT: case LIBSSH2_ERROR_SOCKET_TIMEOUT: case LIBSSH2_ERROR_SOCKET_DISCONNECT:
+    case LIBSSH2_ERROR_SOCKET_SEND: case LIBSSH2_ERROR_SOCKET_RECV: return "SSH socket error during sign-in";
+    default: return "SSH authentication failed";
+  }
 }
 } // namespace t3ssh

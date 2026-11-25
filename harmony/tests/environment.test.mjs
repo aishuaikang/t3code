@@ -8,6 +8,7 @@ let tokenStatus = 200;
 let tickets = 0;
 let ticketStatus=200;
 let holdDescriptor=false,pendingDescriptor=null;
+let holdSnapshot=false,pendingSnapshot=null,destroyedSnapshots=0;
 let networkFailures=Infinity, holdSecondFailure=false, pendingNetworkFailure=null;
 let unavailableBase=null, sshBase='http://127.0.0.1:23456', ensureWait=null;
 let sshPairs=0, sshCloses=0, sshTargets=[], savedSsh=[];
@@ -20,10 +21,12 @@ globalThis.__environmentSsh={
 globalThis.__harmonyHttp = {
   RequestMethod: { GET: 'GET', POST: 'POST' },
   createHttp() {
+    let snapshot=false;
     return {
-      destroy() {},
+      destroy() {if(snapshot)destroyedSnapshots++;},
       request(url, options, callback) {
         requests.push({ url, ...options });
+        if(holdSnapshot && url.includes('/api/orchestration/')){snapshot=true;pendingSnapshot=callback;return;}
         if(unavailableBase && url.startsWith(unavailableBase) && networkFailures-- > 0){if(holdSecondFailure && networkFailures===0){pendingNetworkFailure=()=>callback({code:1},null);return;}callback({code:1},null);return;}
         if(holdDescriptor && url.endsWith('/.well-known/t3/environment')){pendingDescriptor=()=>callback(null,{responseCode:200,result:JSON.stringify({environmentId:'wrong-environment'})});return;}
         let status = 200;
@@ -32,7 +35,7 @@ globalThis.__harmonyHttp = {
           status = tokenStatus;
           result = { access_token: 'private-bearer' };
         }
-        if (url.endsWith('/api/auth/websocket-ticket')) {status=ticketStatus;result = { ticket: `ticket-${++tickets}` };}
+        if (url.includes('/api/auth/websocket-ticket')) {status=ticketStatus;result = { ticket: `ticket-${++tickets}` };}
         callback(null, { responseCode: status, result: JSON.stringify(result) });
       }
     };
@@ -69,6 +72,55 @@ test('each additional page connection gets a fresh authenticated ticket', async 
   const request = requests.at(-1);
   assert.equal(request.header.Authorization, 'Bearer private-bearer');
 });
+test('browser streams use fresh media-scoped access without exposing the bearer and preserve endpoint paths',async()=>{
+ tokenStatus=200;const connection=await env.connectDirectEnvironment('https://mint.example.ts.net/base/','pair',()=>{});
+ const first=await connection.openPreviewAccess(),second=await connection.openPreviewAccess();
+ assert.equal(first.httpBase,'https://mint.example.ts.net/base/api/preview-stream');assert.equal(first.wsBase,'wss://mint.example.ts.net/base/api/preview-stream');
+ assert.notEqual(first.query.wsTicket,second.query.wsTicket);assert.equal(first.credentials,false);
+ assert.equal(requests.at(-1).url,'https://mint.example.ts.net/base/api/auth/websocket-ticket?use=media');
+ assert.equal(JSON.stringify(first).includes('private-bearer'),false);
+});
+
+test('loads authenticated HTTP snapshots with a slow-network deadline and no extra pairing', async () => {
+  requests = []; tokenStatus = 200;
+  const connection = await env.connectDirectEnvironment('https://mint.example.ts.net/base/', 'pair', () => {});
+  const before = tickets;
+  const snapshot = await connection.loadSnapshot('/api/orchestration/shell');
+  const request = requests.at(-1);
+  assert.equal(request.url,'https://mint.example.ts.net/base/api/orchestration/shell');
+  assert.equal(request.method,'GET');
+  assert.equal(request.header.Authorization,'Bearer private-bearer');
+  assert.equal(request.header['x-t3-orchestration-protocol'],'2');
+  assert.equal(request.readTimeout,20000);
+  assert.equal(tickets,before);
+  assert.equal(snapshot.environmentId,'test-environment');
+  unavailableBase='https://mint.example.ts.net';
+  try { assert.equal(await connection.loadSnapshot('/api/orchestration/shell'),null); }
+  finally { unavailableBase=null; }
+});
+test('snapshot prefetch enforces one total deadline and destroys a stalled HTTP request',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  holdSnapshot=true;destroyedSnapshots=0;
+  try {
+    const connection=new env.PreparedConnection('http://host',{environmentId:'test-environment'},'bearer','direct');
+    let result='pending';connection.loadSnapshot('/api/orchestration/threads/t',5000).then(value=>result=value);
+    t.mock.timers.tick(4999);await Promise.resolve();assert.equal(result,'pending');
+    t.mock.timers.tick(1);for(let i=0;i<8;i++)await Promise.resolve();
+    assert.equal(result,null);assert.equal(destroyedSnapshots,1);
+    pendingSnapshot(null,{responseCode:200,result:'{"snapshotSequence":10}'});
+    await Promise.resolve();assert.equal(result,null);assert.equal(destroyedSnapshots,1);
+  } finally {holdSnapshot=false;pendingSnapshot=null;}
+});
+
+test('initial and additional WebSocket connections declare orchestration protocol 2', async () => {
+  tokenStatus = 200;
+  const connection = await env.connectDirectEnvironment('https://mint.example.ts.net', 'pair', () => {});
+  const additional = await connection.openRpc();
+  const ssh = await env.connectEnvironment({ serverPort: 3773, pairingToken: 'ssh-pair' }, '', () => {});
+  for (const url of [connection.socketUrl, additional.url, ssh.socketUrl]) {
+    assert.equal(new URL(url).searchParams.get('orchestrationProtocol'), '2');
+  }
+});
 
 test('rejects HTTP failure even if the response looks like a success payload', async () => {
   tokenStatus = 401;
@@ -102,19 +154,19 @@ test('existing SSH service exchanges the supplied pairing token and cleans up a 
 
 test('SSH save excludes ephemeral address and pairing token; cold restore reuses bearer through a new tunnel',async()=>{
  requests=[];savedSsh=[];tokenStatus=200;
- const target={hostname:'ssh.example',port:22,username:'dev',password:'ssh-password',hostFingerprint:'SHA256:pin',serverPort:13773,pairingToken:'once-only'};
+ const target={hostname:'ssh.example',port:22,username:'dev',password:'ssh-password',hostFingerprint:'SHA256:pin',serverHost:'t3.internal',serverPort:13773,pairingToken:'once-only'};
  const connection=await env.connectEnvironment(target,'unused',()=>{});
  await connection.save();
  assert.equal(savedSsh.length,1);
  const [saved,bearer,password]=savedSsh[0];
- assert.equal(saved.httpBaseUrl,'');assert.equal(saved.ssh.serverPort,13773);
+ assert.equal(saved.httpBaseUrl,'');assert.equal(saved.ssh.serverPort,13773);assert.equal(saved.ssh.serverHost,'t3.internal');
  assert.doesNotMatch(JSON.stringify(saved),/once-only|ssh-password|private-bearer|23456/);
  assert.equal(bearer,'private-bearer');assert.equal(password,'ssh-password');
  requests=[];
  const restored=await env.restoreSshEnvironment(saved,{bearer,password},()=>{});
  assert.equal(restored.httpBaseUrl,'http://127.0.0.1:23456');
  assert.equal(sshTargets.at(-1).pairingToken,undefined);
- assert.equal(sshTargets.at(-1).password,'ssh-password');
+ assert.equal(sshTargets.at(-1).password,'ssh-password');assert.equal(sshTargets.at(-1).serverHost,'t3.internal');
  assert.equal(requests.some(r=>r.url.endsWith('/oauth/token')),false);
  assert.equal(requests.at(-1).header.Authorization,'Bearer private-bearer');
  await restored.save();assert.equal(savedSsh.at(-1)[0].connectionId,saved.connectionId);

@@ -4,9 +4,10 @@ import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 const source=readFileSync(process.env.T3_NEW_TASK_SOURCE??new URL('../app/entry/src/main/ets/pages/NewTask.ets',import.meta.url),'utf8');
 const model=readFileSync(new URL('../app/entry/src/main/ets/model/ComposerPath.ets',import.meta.url),'utf8');
+const commands=readFileSync(new URL('../app/entry/src/main/ets/model/ComposerCommands.ets',import.meta.url),'utf8');
 const start=source.indexOf('  private cancelPaths('),end=source.indexOf('  private async restoreDraft(');
 assert.ok(start>=0 && end>start,'NewTask must implement project-aware file completion');
-const body=`${model}
+const body=`${model}\n${commands}
 let timers=new Map(),timerId=0;
 function setTimeout(callback){timers.set(++timerId,callback);return timerId;}
 function clearTimeout(id){timers.delete(id);}
@@ -14,6 +15,9 @@ export function flush(){const pending=[...timers.values()];timers.clear();for(co
 export const EnvironmentSession={current:null};
 function preferredModelIndex(){return 0;}
 class Fixture {
+ environmentId='env';
+ ${source.slice(source.indexOf('  private currentConnection('),source.indexOf('  aboutToAppear(')).replaceAll('private ','')}
+
  active=true;draftReady=true;busy=false;pendingTurn=null;finished=false;draft='@file';pathRevision=0;pathTimer=-1;pathEntries=[];pathStatus='';pathStart=5;pathEnd=5;pathTrigger=null;pathConnection=null;
  projectIndex=0;projects=[{id:'one',workspaceRoot:'/one'},{id:'two',workspaceRoot:'/two'}];models=[];modelIndex=0;
  composerController={caretPosition(){}};queueSave(){}
@@ -23,7 +27,7 @@ export default Fixture;
 `;
 const {default:Fixture,flush,EnvironmentSession}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(body)).toString('base64'));
 const tick=()=>new Promise(resolve=>queueMicrotask(resolve));
-function setup(){const requests=[];EnvironmentSession.current={rpc:{call:(tag,payload)=>new Promise((resolve,reject)=>requests.push({tag,payload,resolve,reject}))}};return {page:new Fixture(),requests};}
+function setup(){const requests=[];EnvironmentSession.current={descriptor:{environmentId:'env'},rpc:{call:(tag,payload)=>new Promise((resolve,reject)=>requests.push({tag,payload,resolve,reject}))}};return {page:new Fixture(),requests};}
 test('switching projects invalidates old response and searches the new directory',async()=>{
  const {page,requests}=setup();page.updatePathSearch(5,5);flush();
  page.chooseProject(1);flush();
@@ -33,7 +37,7 @@ test('switching projects invalidates old response and searches the new directory
  assert.deepEqual(page.pathEntries,[{path:'two.txt',kind:'file'}]);
 });
 test('switching environments before a response cannot publish old suggestions',async()=>{
- const {page,requests}=setup();page.updatePathSearch(5,5);flush();EnvironmentSession.current={rpc:{}};
+ const {page,requests}=setup();page.updatePathSearch(5,5);flush();EnvironmentSession.current={descriptor:{environmentId:'env'},rpc:{}};
  requests[0].resolve({entries:[{path:'one.txt',kind:'file'}],truncated:false});await tick();assert.deepEqual(page.pathEntries,[]);
 });
 test('a pending first turn cannot change its text through a file suggestion',()=>{
@@ -52,6 +56,6 @@ test('project change alone clears visible results and rejects in-flight results 
  requests[0].resolve({entries:[{path:'late-one.txt',kind:'file'}],truncated:false});await tick();assert.deepEqual(page.pathEntries,[]);
 });
 test('a saved candidate cannot be inserted after the global connection changes',()=>{
- const {page}=setup();page.updatePathSearch(5,5);page.pathEntries=[{path:'old-env.txt',kind:'file'}];EnvironmentSession.current={rpc:{}};
+ const {page}=setup();page.updatePathSearch(5,5);page.pathEntries=[{path:'old-env.txt',kind:'file'}];EnvironmentSession.current={descriptor:{environmentId:'env'},rpc:{}};
  page.selectPath({path:'old-env.txt',kind:'file'});assert.equal(page.draft,'@file');
 });

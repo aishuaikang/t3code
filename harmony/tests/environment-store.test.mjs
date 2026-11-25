@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
-let stored=[];let queries=[];
+let stored=[];let queries=[];const favorites=new Map();
+globalThis.__routePrefs={getPreferences:async()=>({getSync:(k,d)=>favorites.get(k)??d,putSync:(k,v)=>favorites.set(k,v),deleteSync:k=>favorites.delete(k),flush:async()=>{}})};
 const Tag={SECRET:1,ALIAS:2,ACCESSIBILITY:3,RETURN_TYPE:4,CONFLICT_RESOLUTION:5,DATA_LABEL_NORMAL_1:6,DATA_LABEL_NORMAL_2:7,SYNC_TYPE:8};
 const equal=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array ? Buffer.from(a).equals(Buffer.from(b)):a===b;
 globalThis.__asset={Tag,SyncType:{NEVER:0},Accessibility:{DEVICE_UNLOCKED:2},ReturnType:{ALL:0,ATTRIBUTES:1},ConflictResolution:{OVERWRITE:0},ErrorCode:{NOT_FOUND:24000002},
@@ -12,6 +13,7 @@ globalThis.__asset={Tag,SyncType:{NEVER:0},Accessibility:{DEVICE_UNLOCKED:2},Ret
 };
 globalThis.__util={TextEncoder:class{encodeInto(text){return new TextEncoder().encode(text);}},TextDecoder:{create(){return {decodeToString(bytes){return new TextDecoder().decode(bytes);}};}}};
 const source=readFileSync(new URL('../app/entry/src/main/ets/connection/EnvironmentStore.ets',import.meta.url),'utf8')
+ .replace("import preferences from '@ohos.data.preferences';",'const preferences=globalThis.__routePrefs;').replace("import common from '@ohos.app.ability.common';",'')
  .replace("import asset from '@ohos.security.asset';",'const asset=globalThis.__asset;')
  .replace("import util from '@ohos.util';",'const util=globalThis.__util;')
  .replace("import { BusinessError } from '@ohos.base';",'');
@@ -30,7 +32,7 @@ test('saved environments list only metadata, securely recover credentials and fo
  assert.equal(stored[0].get(Tag.SYNC_TYPE),0);
  await store.saveEnvironment({...first,label:'Updated'},'replacement');
  assert.equal(stored.length,2);assert.equal(await store.readBearer('one'),'replacement');
- await store.forgetEnvironment('one');assert.deepEqual(await store.loadEnvironments(),[second]);
+ await store.forgetEnvironment(first,{});assert.deepEqual(await store.loadEnvironments(),[second]);
  await assert.rejects(store.readBearer('one'));
 });
 
@@ -51,8 +53,21 @@ test('SSH credentials stay encrypted and coexist with direct access to the same 
  await store.saveSshEnvironment({...ssh,updatedAt:'03'},'new-bearer','new-password');
  assert.equal(stored.length,2);
  assert.deepEqual(await store.readSshCredentials('route-one'),{bearer:'new-bearer',password:'new-password'});
- await store.forgetEnvironment('route-one',true);
+ await store.forgetEnvironment(ssh,{});
  assert.deepEqual(await store.loadEnvironments(),[direct]);
  assert.equal(await store.readBearer('shared'),'direct-bearer');
  await assert.rejects(store.readSshCredentials('route-one'));
+});
+
+test('SSH priority survives use of a backup, gives the next route priority after removal, and is scoped per environment',async()=>{
+ stored=[];favorites.clear();const ctx={};const route=(env,id,t)=>({environmentId:env,connectionId:id,httpBaseUrl:'',ssh:{hostname:id,port:22,username:'me',serverPort:3773},label:env,updatedAt:t});
+ const a=route('one','a','01'),b=route('one','b','02'),c=route('one','c','03'),other=route('two','else','04');
+ const add=async r=>{await store.saveSshEnvironment(r,'bearer','pass');await store.loadEnvironments(ctx)};
+ await add(a);await add(b);await add(c);await add(other);
+ const read=async()=>Object.fromEntries((await store.loadEnvironments(ctx)).map(r=>[r.connectionId,r.sshRole]));
+ assert.deepEqual(await read(),{else:undefined,a:'primary',b:'backup',c:'backup'});
+ await store.setPrimarySshRoute(ctx,b);await add({...a,updatedAt:'05'});
+ assert.deepEqual(await read(),{else:undefined,a:'backup',b:'primary',c:'backup'});
+ await store.forgetEnvironment(b,ctx);const next=await read();assert.equal(next.a,'primary');assert.equal(next.c,'backup');
+ await add({...c,updatedAt:'06'});assert.equal((await read()).a,'primary');
 });

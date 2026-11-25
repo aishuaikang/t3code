@@ -1,9 +1,10 @@
 import { MarkdownNode } from 'libt3markdown.so';
 
-export interface MarkdownRun { text: string; bold: boolean; italic: boolean; strike: boolean; code: boolean; href: string; }
+export interface MarkdownRun { imageSource?: string; text: string; bold: boolean; italic: boolean; strike: boolean; code: boolean; href: string; }
+export interface MarkdownPart { runs: MarkdownRun[]; image?: MarkdownRun; }
 export interface MarkdownCell { runs: MarkdownRun[]; header: boolean; align: string; }
 export interface MarkdownRow { cells: MarkdownCell[]; }
-export interface MarkdownBlock { kind: string; runs: MarkdownRun[]; level: number; depth: number; marker: string; language: string; rows: MarkdownRow[]; }
+export interface MarkdownBlock { kind: string; runs: MarkdownRun[]; level: number; depth: number; marker: string; language: string; rows: MarkdownRow[]; children?: MarkdownBlock[]; }
 // Match the iOS nativeMarkdownText entity handling; code retains source bytes.
 function decodeEntities(value: string): string {
   let decoded = value;
@@ -38,7 +39,11 @@ function inline(node: MarkdownNode, parent: MarkdownRun = run('')): MarkdownRun[
   if (node.type === 'line_break') style.text = '\n';
   else if (node.type === 'soft_break') style.text = ' ';
   else style.text = node.content ?? '';
-  if (node.type === 'image') style.text = node.alt ?? node.title ?? '';
+  if (node.type === 'image' && !style.code) {
+    style.text = decodeEntities(node.alt ?? node.title ?? '');
+    style.imageSource = decodeEntities(node.href ?? '');
+    return [style];
+  }
   if (!style.code) style.text = decodeEntities(style.text);
   if (style.text) result.push(style);
   for (const child of node.children) result.push(...inline(child, style));
@@ -90,12 +95,24 @@ export function markdownBlocks(node: MarkdownNode, depth: number = 0): MarkdownB
       index++;
     }
   } else if (node.type === 'blockquote') {
-    for (const child of node.children) {
-      const nested = markdownBlocks(child, depth + 1);
-      for (const entry of nested) { if (!entry.marker) entry.marker = '│'; result.push(entry); }
-    }
+    const children: MarkdownBlock[] = [];
+    for (const child of node.children) children.push(...markdownBlocks(child));
+    result.push({ kind: 'blockquote', runs: [], level: 0, depth: depth, marker: '', language: '', rows: [], children: children });
   } else if (node.type === 'table') {
     const entry = block(node, depth); entry.runs = []; entry.rows = tableRows(node); result.push(entry);
   } else { result.push(block(node, depth)); }
   return result;
+}
+
+export function markdownParts(runs: MarkdownRun[]): MarkdownPart[] {
+  const parts: MarkdownPart[] = [];
+  let text: MarkdownRun[] = [];
+  for (const entry of runs) {
+    if (entry.imageSource) {
+      if (text.length > 0) { parts.push({ runs: text }); text = []; }
+      parts.push({ runs: [], image: entry });
+    } else text.push(entry);
+  }
+  if (text.length > 0) parts.push({ runs: text });
+  return parts;
 }

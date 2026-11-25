@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../app/entry/src/main/ets/pages/NewTask.ets
 function fixture() {
   const start = source.indexOf('  private async dismiss(');
   assert.ok(start >= 0, 'new task sheet needs a draft-preserving dismiss action');
-  const end = source.indexOf('  private async persistDraft(', start);
+  const end = source.indexOf('\n  }', start) + 4;
   return import('data:text/javascript;base64,' + Buffer.from(stripTypeScriptTypes(`export class Fixture {
     busy=false; draftReady=true; error=''; closed=0;
     persistDraft=async()=>{}; onClose=()=>{this.closed++};

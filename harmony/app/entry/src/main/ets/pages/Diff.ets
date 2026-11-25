@@ -1,56 +1,67 @@
-import { Typography, resolveTypography, scaledFontSize, codeMetrics } from '../model/Typography';
+import { ChatPageHeader, immersiveMaterial } from './ChatGlass';
+import { Typography, resolveTypography, scaledFontSize } from '../model/Typography';
 import { ThemeRuntime } from '../connection/ThemeRuntime';
-/**
- * Diff 审查页：上游 Swift 渲染的 display list 由 SwiftFrame 逐操作回放。
- * 行数据/滚动/点击全部走 SwiftBridge 驱动上游代码，本页无第二份布局逻辑。
- */
-import display from '@ohos.display';
+import measure from '@ohos.measure';
 import router from '@ohos.router';
+import { FrameCallback } from '@ohos.arkui.UIContext';
 import { EnvironmentSession } from '../connection/Environment';
 import { RpcClient } from '../connection/Rpc';
-import { DiffCheckpoint, DiffScope, diffScopes, checkpointRequest } from '../model/DiffScope';
+import { DiffProjection, DiffScope, diffScopes, checkpointRequest, projectionCheckpoints } from '../model/DiffScope';
 import { DraftStore } from '../connection/DraftStore';
 import { ReviewLine, formatLineComment, appendComment } from '../model/ReviewComment';
 import { DiffRow, parseDiffRows } from '../model/DiffRows';
-import { SwiftBridge } from '../bridge/NativeBridge';
-import { SwiftFrame } from '../bridge/SwiftFrame';
+import { DiffDisplayRow, diffDisplayRows, diffAnchorIndex, diffLineText } from '../model/DiffPresentation';
+import { DiffDataSource } from './DiffDataSource';
+import { AppIcon } from './AppIcon';
 
-interface DiffFontStyle { codeFontSize: number; lineNumberFontSize: number; rowHeight: number; gutterWidth: number; codePadding: number; textVerticalInset: number; codeFontWeight: string; lineNumberFontWeight: string; }
 interface ThreadRequest { threadId: string; }
-interface DiffSnapshot { thread: DiffThread; }
-interface DiffThread { checkpoints?: DiffCheckpoint[]; }
-interface DiffItem { kind: string; snapshot?: DiffSnapshot; }
-interface FileAction { fileId: string; rowId?: string; }
 interface DiffResult { diff: string; }
-interface PreviewRequest { cwd: string; ignoreWhitespace: boolean; }
+interface PreviewRequest { cwd: string; ignoreWhitespace: boolean; sourceKind?: string; }
 interface PreviewSource { kind: string; diff: string; truncated: boolean; }
 interface PreviewResult { sources: PreviewSource[]; }
+
+class DiffScrollFrame extends FrameCallback {
+  private action: () => void;
+  constructor(action: () => void) { super(); this.action = action; }
+  onFrame(): void { this.action(); }
+}
 
 @Entry
 @Component
 struct DiffPage {
   private font(size: number): number { return scaledFontSize(size, this.sizes.baseFontSize); }
-  @StorageLink('textSizes') @Watch('typographyChanged') sizes: Typography = resolveTypography(16, null, null);
-  @StorageLink('themeKey') @Watch('themeChanged') themeKey: string = 't3-code-light';
+  @StorageLink('textSizes') @Watch('viewChanged') sizes: Typography = resolveTypography(16, null, null);
+  @StorageLink('themeKey') @Watch('viewChanged') themeKey: string = 't3-code-light';
   private color(role: string): string { return ThemeRuntime.color(this.themeKey, role); }
-  @State frameJson: string = '';
+  private diffColor(role: string): string { return ThemeRuntime.palette(this.themeKey).diff[role]; }
   @State ready: boolean = false;
   @State errorText: string = '';
-  private instance: string | null = null;
   private rpc: RpcClient | null = null;
   private active: boolean = false;
-  private frameWidth: number = 360;
-  private frameHeight: number = 640;
-  private offsetY: number = 0;
-  private panStartY: number = 0;
+  private dataSource: DiffDataSource = new DiffDataSource();
+  private scroller: Scroller = new Scroller();
+  private horizontalScroller: Scroller = new Scroller();
+  private visibleIndex: number = 0;
+  private scrollRevision: number = 0;
+  @State viewportWidth: number = 360;
+  @State contentWidth: number = 360;
+  @State horizontalOffset: number = 0;
   @State scopes: DiffScope[] = [];
   @State selectedId: string = 'all';
   @State loading: boolean = false;
   @State notice: string = '';
-  private collapsedFiles: string[] = [];
-  private viewedFiles: string[] = [];
-  private fileIds: string[] = [];
+  @State collapsedFiles: string[] = [];
+  @State viewedFiles: string[] = [];
+  @State files: DiffRow[] = [];
+  @State split: boolean = false;
+  @State wrap: boolean = true;
+  @State whitespace: boolean = false;
+  @State ignoreWhitespace: boolean = false;
+  @State scopeOpen: boolean = false;
+  @State filesOpen: boolean = false;
+  @State fileQuery: string = '';
   private rows: DiffRow[] = [];
+  private initialScope: boolean = true;
   @State commentRow: DiffRow | null = null;
   @State commentText: string = '';
   @State commentPath: string = '';
@@ -78,84 +89,48 @@ struct DiffPage {
       this.rpc = rpc;
       const threadId = params['threadId'] ?? '';
       const subscription: ThreadRequest = { threadId: threadId };
-      const checkpoints = await new Promise<DiffCheckpoint[]>((resolve, reject) => {
-        rpc.callStream('orchestration.subscribeThread', subscription, (values: object[]) => {
-          for (const value of values) {
-            const item = value as DiffItem;
-            if (item.kind === 'snapshot' && item.snapshot !== undefined) {
-              resolve(item.snapshot.thread.checkpoints ?? []);
-            }
-          }
-        }).catch((error: Error) => { reject(error); });
-      });
+      const projection = await rpc.call<DiffProjection>('orchestration.getThreadProjection', subscription);
       if (!this.active) return;
-      this.scopes = diffScopes(checkpoints);
-      let scope = this.scopes.find((item: DiffScope) => item.id === this.selectedId);
-      if (scope === undefined) scope = this.scopes[0];
+      this.scopes = diffScopes(projectionCheckpoints(projection));
+      if (this.initialScope) {
+        const workspaceScope = params['scope'] === 'branch' || params['scope'] === 'workspace' ? params['scope'] : '';
+        if (workspaceScope) this.selectedId = workspaceScope;
+        const ordinal = workspaceScope ? 0 : Number(params['toTurnCount']) || projection.checkpoints?.find((entry) =>
+          entry.runId === params['runId'] && entry.status === 'ready' && entry.appRunOrdinal !== null)?.appRunOrdinal;
+        if (ordinal) this.selectedId = `turn:${ordinal}`;
+        if ((params['runId'] && !ordinal) || (ordinal && !this.scopes.some((item: DiffScope) => item.id === this.selectedId))) {
+          throw new Error('本轮文件快照尚未就绪，可刷新重试或选择其他变更范围');
+        }
+        if (!ordinal && !params['runId'] && this.selectedId === 'all' && !this.scopes.some((item: DiffScope) => item.id === 'all')) {
+          this.selectedId = 'workspace';
+        }
+      }
+      const scope = this.scopes.find((item: DiffScope) => item.id === this.selectedId);
+      if (scope === undefined) throw new Error('所选范围的文件快照尚未就绪，请刷新重试');
+      this.initialScope = false;
       this.selectedId = scope.id;
       let diff = '';
-      if (scope.id === 'workspace') {
-        const request: PreviewRequest = { cwd: params['cwd'] ?? '', ignoreWhitespace: false };
+      if (scope.id === 'workspace' || scope.id === 'branch') {
+        const request: PreviewRequest = { cwd: params['cwd'] ?? '', ignoreWhitespace: this.ignoreWhitespace };
+        if (scope.id === 'branch') request.sourceKind = 'branch-range';
         const preview = await rpc.call<PreviewResult>('review.getDiffPreview', request);
-        const source = preview.sources.find((item: PreviewSource) => item.kind === 'working-tree');
+        const source = preview.sources.find((item: PreviewSource) => item.kind === (scope.id === 'branch' ? 'branch-range' : 'working-tree'));
         diff = source?.diff ?? '';
         if (source?.truncated) this.notice = '变更内容过长，当前显示已截断';
       } else {
-        const query = checkpointRequest(threadId, scope.turnCount, scope.id === 'all');
+        const query = checkpointRequest(threadId, scope.turnCount, scope.id === 'all', this.ignoreWhitespace);
         const result = await rpc.call<DiffResult>(query.method, query.payload);
         diff = result.diff;
       }
       if (!this.active) return;
       const rows = parseDiffRows(diff);
       this.rows = rows;
-      if (rows.length === 0) { this.notice = '此范围没有文件变更'; return; }
-      const bridge = SwiftBridge.ensure();
-      if (this.instance === null) this.instance = bridge.createView('T3ReviewDiffSurface');
-      const instance = this.instance;
-      if (instance === null) throw new Error('无法创建 review-diff 实例');
-      this.applyTheme();
-      this.applyTypography();
-      bridge.callAsync('T3ReviewDiffSurface', 'setRowsJson', instance,
-        JSON.stringify([JSON.stringify(rows)]));
-      bridge.pumpMainQueue();
-      this.fileIds = rows.filter((row) => row.kind === 'file').map((row) => row.id);
+      this.files = rows.filter((row: DiffRow) => row.kind === 'file');
       this.collapsedFiles = [];
       this.viewedFiles = [];
-      bridge.setProp(instance, 'collapsedFileIdsJson', '[]');
-      bridge.setProp(instance, 'viewedFileIdsJson', '[]');
-      this.offsetY = 0;
-      bridge.setScrollOffset(instance, 0, 0);
-      this.refresh();
+      this.rebuildRows(true);
+      if (rows.length === 0) { this.notice = '此范围没有文件变更'; return; }
       this.ready = true;
-      SwiftBridge.setEventListener((instanceId: string, name: string, payloadJson: string) => {
-        if (instanceId !== instance) return;
-        if (name === 'onPressLine') {
-          const action = JSON.parse(payloadJson) as FileAction;
-          const row = this.rows.find((entry: DiffRow) => entry.id === action.rowId && entry.kind === 'line');
-          if (row !== undefined) {
-            this.commentPath = this.rows.find((entry: DiffRow) => entry.id === row.fileId)?.filePath ?? '';
-            this.commentRow = row;
-            this.commentText = '';
-          }
-          return;
-        }
-        if (name === 'onToggleFile' || name === 'onToggleViewedFile') {
-          const action = JSON.parse(payloadJson) as FileAction;
-          if (!this.fileIds.includes(action.fileId)) return;
-          if (name === 'onToggleFile') {
-            this.collapsedFiles = this.collapsedFiles.includes(action.fileId)
-              ? this.collapsedFiles.filter((id: string) => id !== action.fileId)
-              : this.collapsedFiles.concat([action.fileId]);
-            bridge.setProp(instance, 'collapsedFileIdsJson', JSON.stringify(this.collapsedFiles));
-          } else {
-            this.viewedFiles = this.viewedFiles.includes(action.fileId)
-              ? this.viewedFiles.filter((id: string) => id !== action.fileId)
-              : this.viewedFiles.concat([action.fileId]);
-            bridge.setProp(instance, 'viewedFileIdsJson', JSON.stringify(this.viewedFiles));
-          }
-        }
-        this.refresh();
-      });
     } catch (error) {
       if (this.active) this.errorText = error instanceof Error ? error.message : String(error);
     } finally {
@@ -176,7 +151,7 @@ struct DiffPage {
         .findIndex((entry: DiffRow) => entry.id === row.id);
       const section = this.scopes.find((item: DiffScope) => item.id === this.selectedId);
       const line: ReviewLine = { change: row.change, content: row.content, oldLineNumber: row.oldLineNumber, newLineNumber: row.newLineNumber };
-      const comment = formatLineComment(this.selectedId === 'workspace' ? 'working-tree' : this.selectedId,
+      const comment = formatLineComment(this.selectedId === 'workspace' ? 'working-tree' : this.selectedId === 'branch' ? 'branch-range' : this.selectedId,
         section?.value ?? 'Diff', this.commentPath, index, line, this.commentText);
       await store.save(appendComment(existing, comment));
       if (this.active) router.back();
@@ -188,115 +163,251 @@ struct DiffPage {
   aboutToDisappear(): void {
     this.active = false;
     this.rpc?.close();
-    if (this.instance !== null) {
-      SwiftBridge.ensure().destroyView(this.instance);
-      this.instance = null;
-    }
-    SwiftBridge.setEventListener(null);
   }
 
-  private applyTypography(): void {
-    if (this.instance === null) return;
-    const metrics = codeMetrics(this.sizes.codeFontSize);
-    const style: DiffFontStyle = { codeFontSize: metrics.fontSize, lineNumberFontSize: metrics.lineNumberFontSize,
-      rowHeight: metrics.rowHeight, gutterWidth: metrics.gutterWidth, codePadding: metrics.codePadding,
-      textVerticalInset: metrics.textVerticalInset, codeFontWeight: 'regular', lineNumberFontWeight: 'regular' };
-    SwiftBridge.ensure().setProp(this.instance, 'styleJson', JSON.stringify(style));
+  private scrollTo(index: number): void {
+    const revision = ++this.scrollRevision;
+    this.getUIContext().postFrameCallback(new DiffScrollFrame(() => {
+      if (!this.active || revision !== this.scrollRevision || !this.ready || this.commentRow !== null) return;
+      this.horizontalScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+      this.scroller.scrollToIndex(index, false, ScrollAlign.START);
+    }));
   }
-  private typographyChanged(): void { this.applyTypography(); this.refresh(); }
-
-  private applyTheme(): void {
-    if (this.instance === null) return;
-    const theme = ThemeRuntime.palette(this.themeKey);
-    const bridge = SwiftBridge.ensure();
-    bridge.setProp(this.instance, 'appearanceScheme', theme.scheme);
-    bridge.setProp(this.instance, 'themeJson', JSON.stringify(theme.diff));
-  }
-  private themeChanged(): void {
-    this.applyTheme();
-    this.refresh();
-  }
-
-  private refresh(): void {
-    if (this.instance === null) {
-      return;
+  private rebuildRows(reset: boolean = false): void {
+    const anchor = this.dataSource.getData(this.visibleIndex);
+    const rows = diffDisplayRows(this.rows, this.collapsedFiles, this.split);
+    let width = this.viewportWidth;
+    if (!this.wrap) {
+      let codeWidth = 0;
+      for (const row of this.rows) {
+        if (row.kind !== 'line') continue;
+        codeWidth = Math.max(codeWidth, this.getUIContext().px2vp(measure.measureText({
+          textContent: diffLineText(row.content, this.whitespace).replace(/\t/g, '    '),
+          fontSize: this.sizes.codeFontSize, fontFamily: 'monospace'
+        })));
+      }
+      width = Math.max(width, this.split ? (codeWidth + 58) * 2 : codeWidth + 96);
     }
-    const bridge = SwiftBridge.ensure();
-    bridge.setFrame(this.instance, this.frameWidth, this.frameHeight, display.getDefaultDisplaySync().densityPixels);
-    const json: string | null = bridge.displayList(this.instance);
-    if (json !== null) {
-      this.frameJson = json;
-    }
+    this.contentWidth = width;
+    this.dataSource.update(rows);
+    this.horizontalOffset = 0;
+    this.scrollTo(reset || anchor === undefined ? 0 : diffAnchorIndex(rows, anchor.source.id, anchor.fileId));
+  }
+  private viewChanged(): void { if (this.active) this.rebuildRows(); }
+  private toggleFile(id: string): void {
+    this.collapsedFiles = this.collapsedFiles.includes(id) ? this.collapsedFiles.filter((entry: string) => entry !== id) : this.collapsedFiles.concat([id]);
+    this.rebuildRows();
+  }
+  private showFile(file: DiffRow): void {
+    this.filesOpen = false;
+    this.collapsedFiles = this.collapsedFiles.filter((id: string) => id !== file.id);
+    this.rebuildRows();
+    this.scrollTo(diffAnchorIndex(diffDisplayRows(this.rows, this.collapsedFiles, this.split), file.id, file.id));
+  }
+  private startComment(row: DiffRow): void {
+    this.commentPath = this.files.find((file: DiffRow) => file.id === row.fileId)?.filePath ?? '';
+    this.commentRow = row; this.commentText = '';
+  }
+  private lineBackground(row: DiffRow | undefined): string {
+    return this.diffColor(row?.change === 'add' ? 'addBackground' : row?.change === 'delete' ? 'deleteBackground' : 'background');
+  }
+  private lineColor(row: DiffRow | undefined): string {
+    return this.diffColor(row?.change === 'add' ? 'addText' : row?.change === 'delete' ? 'deleteText' : 'mutedText');
+  }
+  @Builder
+  private action(icon: string, label: () => string, selected: () => boolean, callback: () => void) {
+    Button({ type: ButtonType.Normal }) { AppIcon({ name: icon, iconSize: 18, tint: this.color(selected() ? 'primary' : 'foreground-muted') }) }
+      .id('diff-tool-' + icon).width(40).height(40).padding(0).borderRadius(10).backgroundColor(selected() ? this.color('subtle-strong') : Color.Transparent)
+      .enabled(!this.loading && this.commentRow === null).accessibilityText(label()).accessibilitySelected(selected()).onClick(callback)
+  }
+  @Builder
+  private scopePicker() {
+    Column() {
+      List() {
+        ForEach(this.scopes, (scope: DiffScope) => {
+          ListItem() {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 10 }) {
+                AppIcon({ name: scope.id === 'workspace' ? 'folder' : scope.id === 'branch' ? 'branch' : scope.id === 'all' ? 'diff' : 'clock',
+                  iconSize: 17, tint: this.color('foreground-muted') })
+                Text(scope.value).fontSize(this.font(14)).fontColor(this.color('foreground')).layoutWeight(1).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis }).textAlign(TextAlign.Start)
+                if (scope.id === this.selectedId) { AppIcon({ name: 'check', iconSize: 16, tint: this.color('primary') }) }
+              }.width('100%')
+            }.width('100%').height(44).padding({ left: 8, right: 10 }).borderRadius(10).backgroundColor(Color.Transparent).onClick(() => {
+              this.scopeOpen = false;
+              if (scope.id !== this.selectedId) { this.selectedId = scope.id; this.initialScope = false; this.load(); }
+            })
+          }
+        }, (scope: DiffScope) => scope.id)
+      }.id('diff-scope-list').width('100%').height(Math.min(this.scopes.length, 7) * 44)
+        .scrollBar(this.scopes.length > 7 ? BarState.Auto : BarState.Off).scrollBarWidth(2)
+        .scrollBarColor('#55' + this.color('foreground-muted').slice(1))
+    }.width(Math.min(264, this.viewportWidth - 32)).padding(8)
+  }
+  @Builder
+  private filesSheet() {
+    Column({ space: 12 }) {
+      Search({ value: this.fileQuery, placeholder: '搜索变更文件' }).textFont({ size: this.font(16) })
+        .fontColor(this.color('foreground')).backgroundColor(this.color('input')).onChange((value: string) => { this.fileQuery = value; })
+      List({ space: 2 }) {
+        ForEach(this.files.filter((file: DiffRow) => (file.filePath ?? '').toLowerCase().includes(this.fileQuery.toLowerCase())), (file: DiffRow) => {
+          ListItem() {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 10 }) {
+                AppIcon({ name: 'file', iconSize: 18, tint: this.color('foreground-muted') })
+                Text(file.filePath ?? '').fontSize(this.font(14)).fontColor(this.color('foreground')).layoutWeight(1).maxLines(2).textAlign(TextAlign.Start)
+                Text(`+${file.additions ?? 0}`).fontSize(this.font(12)).fontColor(this.diffColor('addText'))
+                Text(`−${file.deletions ?? 0}`).fontSize(this.font(12)).fontColor(this.diffColor('deleteText'))
+              }.width('100%')
+            }.width('100%').constraintSize({ minHeight: 52 }).padding(12).backgroundColor(Color.Transparent).onClick(() => { this.showFile(file); })
+          }
+        }, (file: DiffRow) => file.id)
+      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto).scrollBarWidth(2)
+    }.padding(16).height('100%').width('100%')
+  }
+  @Builder
+  private fileHeader(file: DiffRow) {
+    Row({ space: 4 }) {
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          AppIcon({ name: this.collapsedFiles.includes(file.id) ? 'chevron' : 'down', iconSize: 14, tint: this.diffColor('mutedText') })
+          AppIcon({ name: 'file', iconSize: 16, tint: this.color('primary') })
+          Text(file.filePath ?? '').fontSize(this.font(13)).fontColor(this.diffColor('text')).layoutWeight(1).maxLines(2).textAlign(TextAlign.Start)
+        }.width('100%')
+      }.layoutWeight(1).constraintSize({ minHeight: 44 }).padding({ left: 10, right: 4 }).backgroundColor(Color.Transparent)
+        .accessibilityText(`${this.collapsedFiles.includes(file.id) ? '展开' : '折叠'} ${file.filePath ?? ''}`).onClick(() => { this.toggleFile(file.id); })
+      Text(`+${file.additions ?? 0}`).fontSize(this.font(11)).fontColor(this.diffColor('addText'))
+      Text(`−${file.deletions ?? 0}`).fontSize(this.font(11)).fontColor(this.diffColor('deleteText'))
+      Button({ type: ButtonType.Circle }) {
+        AppIcon({ name: this.viewedFiles.includes(file.id) ? 'check-all' : 'check', iconSize: 17,
+          tint: this.color(this.viewedFiles.includes(file.id) ? 'primary' : 'foreground-muted') })
+      }.width(40).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText(`${this.viewedFiles.includes(file.id) ? '取消已查看' : '标记已查看'} ${file.filePath ?? ''}`)
+        .onClick(() => { this.viewedFiles = this.viewedFiles.includes(file.id) ? this.viewedFiles.filter((id: string) => id !== file.id) : this.viewedFiles.concat([file.id]); this.rebuildRows(); })
+    }.width(this.viewportWidth).backgroundColor(this.diffColor('headerBackground')).border({ width: { bottom: 0.5 }, color: this.diffColor('border') })
+      .translate({ x: this.horizontalOffset })
+  }
+  @Builder
+  private codeCell(row: DiffRow | undefined, side: string) {
+    Row({ space: 0 }) {
+      Text(row === undefined ? '' : `${side === 'right' ? row.newLineNumber ?? '' : row.oldLineNumber ?? ''}`)
+        .fontFamily('monospace').fontSize(Math.max(8, this.sizes.codeFontSize - 1)).fontColor(this.lineColor(row))
+        .width(34).textAlign(TextAlign.End).padding({ right: 5, top: 3 })
+      if (!this.split) {
+        Text(row?.newLineNumber === undefined ? '' : `${row.newLineNumber}`).fontFamily('monospace')
+          .fontSize(Math.max(8, this.sizes.codeFontSize - 1)).fontColor(this.lineColor(row)).width(34).textAlign(TextAlign.End).padding({ right: 5, top: 3 })
+      }
+      Text(row?.change === 'add' ? '+' : row?.change === 'delete' ? '−' : ' ').fontFamily('monospace')
+        .fontSize(this.sizes.codeFontSize).fontColor(this.lineColor(row)).width(14).padding({ top: 2 })
+      Text(diffLineText(row?.content, this.whitespace).replace(/\t/g, '    ') || ' ')
+        .fontFamily('monospace').fontSize(this.sizes.codeFontSize).lineHeight(this.sizes.codeFontSize + 7)
+        .fontColor(this.diffColor('text')).wordBreak(WordBreak.BREAK_ALL).layoutWeight(1).padding({ top: 2, bottom: 2, right: 6 })
+    }.width(this.split ? this.contentWidth / 2 : this.contentWidth).alignItems(VerticalAlign.Top)
+      .backgroundColor(this.lineBackground(row)).border({ width: { left: 2 }, color: row?.change === 'add' ? this.diffColor('addBar') : row?.change === 'delete' ? this.diffColor('deleteBar') : Color.Transparent })
+      .gesture(LongPressGesture().onAction(() => { if (row !== undefined) this.startComment(row); }))
+  }
+  @Builder
+  private diffList() {
+    Scroll(this.horizontalScroller) {
+      List({ scroller: this.scroller }) {
+        LazyForEach(this.dataSource, (row: DiffDisplayRow) => {
+          ListItem() {
+            if (row.kind === 'file') { this.fileHeader(row.source) }
+            else if (row.kind === 'line') {
+              if (this.split) {
+                Flex({ direction: FlexDirection.Row, alignItems: ItemAlign.Stretch }) { this.codeCell(row.left, 'left'); this.codeCell(row.right, 'right') }
+                  .width(this.contentWidth)
+              } else { this.codeCell(row.source, 'left') }
+            } else {
+              Text(row.source.text ?? '').fontFamily('monospace').fontSize(Math.max(10, this.sizes.codeFontSize - 1))
+                .fontColor(this.diffColor('hunkText')).padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .width(this.viewportWidth).backgroundColor(this.diffColor('hunkBackground')).translate({ x: this.horizontalOffset })
+            }
+          }
+        }, (row: DiffDisplayRow) => this.dataSource.key(row))
+      }.width(this.contentWidth).height('100%').cachedCount(8).scrollBar(BarState.Auto).scrollBarWidth(2)
+        .scrollBarColor('#66' + this.color('foreground-muted').slice(1)).onScrollIndex((index: number) => { this.visibleIndex = index; })
+    }.scrollable(ScrollDirection.Horizontal).width('100%').layoutWeight(1).align(Alignment.TopStart)
+      .scrollBar(BarState.Auto).scrollBarWidth(2).onScroll((offset: number) => { this.horizontalOffset = offset; })
+      .onAreaChange((_old: Area, area: Area) => { const width = Number(area.width); if (width > 0 && Math.abs(width - this.viewportWidth) > 1) { this.viewportWidth = width; this.rebuildRows(); } })
   }
 
   build() {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Button('返回').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => {
-          router.back();
-        })
-        Text('Diff').fontColor(this.color('foreground')).fontSize(this.font(18)).fontWeight(FontWeight.Medium).layoutWeight(1)
-        Button('刷新').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.loading && this.commentRow === null).onClick(() => { this.load(); })
+    Column({ space: 0 }) {
+      ChatPageHeader() {
+        Column({ space: 2 }) {
+          Row({ space: 6 }) {
+            Button({ type: ButtonType.Circle }) { AppIcon({ name: 'back', iconSize: 21, tint: this.color('glass-label') }) }
+              .width(38).height(38).padding(0).backgroundColor(Color.Transparent).accessibilityText('返回聊天').onClick(() => { router.back(); })
+            Text('文件变更').fontColor(this.color('foreground')).fontSize(this.font(17)).fontWeight(FontWeight.Medium).layoutWeight(1)
+            Button({ type: ButtonType.Circle }) { AppIcon({ name: 'refresh', iconSize: 19, tint: this.color('glass-label') }) }
+              .width(38).height(38).padding(0).backgroundColor(Color.Transparent).enabled(!this.loading && this.commentRow === null)
+              .accessibilityText('刷新文件变更').onClick(() => { this.load(); })
+          }.width('100%').padding({ left: 6, right: 6 })
+          Row({ space: 6 }) {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 4 }) {
+                Text(this.scopes.find((scope: DiffScope) => scope.id === this.selectedId)?.value ?? '选择变更范围')
+                  .fontSize(this.font(13)).fontColor(this.color('foreground')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+                AppIcon({ name: 'down', iconSize: 11, tint: this.color('glass-label') })
+              }
+            }.id('diff-scope').height(32).padding({ left: 10, right: 8 }).borderRadius(10).backgroundColor(this.color('subtle')).flexShrink(1)
+              .enabled(!this.loading && this.commentRow === null).accessibilityText('选择变更轮次').onClick(() => { this.scopeOpen = true; })
+              .bindPopup(this.scopeOpen, { builder: this.scopePicker(), placement: Placement.BottomLeft, enableArrow: false,
+                systemMaterial: immersiveMaterial('popup'), radius: 16,
+                onStateChange: (event: PopupStateChangeParam) => { this.scopeOpen = event.isVisible; } })
+            Blank().layoutWeight(1)
+            if (this.ready) {
+              Text(`+${this.files.reduce((sum: number, file: DiffRow) => sum + (file.additions ?? 0), 0)}`).fontSize(this.font(12)).fontColor(this.diffColor('addText')).maxLines(1)
+              Text(`−${this.files.reduce((sum: number, file: DiffRow) => sum + (file.deletions ?? 0), 0)}`).fontSize(this.font(12)).fontColor(this.diffColor('deleteText')).maxLines(1)
+            }
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 4 }) {
+                AppIcon({ name: 'folder', iconSize: 15, tint: this.color('glass-label') })
+                Text(`${this.ready ? this.files.length : 0}`).fontSize(this.font(12)).fontColor(this.color('glass-label')).maxLines(1)
+              }
+            }.id('diff-files').height(32).padding({ left: 6, right: 6 }).borderRadius(9).backgroundColor(Color.Transparent)
+              .enabled(!this.loading && this.ready && this.commentRow === null).accessibilityText('浏览和定位变更文件')
+              .onClick(() => { this.fileQuery = ''; this.filesOpen = true; })
+              .bindSheet($$this.filesOpen, this.filesSheet(), { systemMaterial: immersiveMaterial('popup'), height: SheetSize.LARGE,
+                title: { title: '变更文件' }, dragBar: true, showClose: true })
+          }.width('100%').padding({ left: 12, right: 10 })
+        }.width('100%').padding({ top: 3, bottom: 6 })
       }
-      .width('100%')
-
-      if (this.scopes.length > 0) {
-        Select(this.scopes).font({ size: this.font(16) }).optionFont({ size: this.font(16) }).selectedOptionFont({ size: this.font(16) }).fontColor(this.color('foreground')).backgroundColor(this.color('input'))
-          .value(this.scopes.find((item: DiffScope) => item.id === this.selectedId)?.value ?? '')
-          .enabled(!this.loading && this.commentRow === null)
-          .onSelect((index: number) => {
-            this.selectedId = this.scopes[index].id;
-            this.load();
-          })
-          .width('100%')
-      }
+      Row({ space: 3 }) {
+        this.action('unified', () => '统一对比', () => !this.split, () => { this.split = false; this.rebuildRows(); })
+        this.action('split', () => '左右对比', () => this.split, () => { this.split = true; this.rebuildRows(); })
+        Divider().vertical(true).height(20).color(this.color('border')).margin({ left: 3, right: 3 })
+        this.action('wrap', () => this.wrap ? '关闭自动换行' : '开启自动换行', () => this.wrap, () => { this.wrap = !this.wrap; this.rebuildRows(); })
+        this.action('paragraph', () => this.whitespace ? '隐藏空白字符' : '显示空白字符', () => this.whitespace, () => { this.whitespace = !this.whitespace; this.rebuildRows(); })
+        this.action('ignore-space', () => this.ignoreWhitespace ? '包含空白差异' : '忽略空白差异', () => this.ignoreWhitespace, () => { this.ignoreWhitespace = !this.ignoreWhitespace; this.load(); })
+        Blank()
+        this.action('fold', () => this.files.length > 0 && this.collapsedFiles.length === this.files.length ? '展开全部文件' : '折叠全部文件', () => this.collapsedFiles.length > 0,
+          () => { this.collapsedFiles = this.collapsedFiles.length === this.files.length ? [] : this.files.map((file: DiffRow) => file.id); this.rebuildRows(); })
+      }.width('100%').padding({ left: 16, right: 16, top: 6, bottom: 6 }).border({ width: { bottom: 0.5 }, color: this.color('border') })
       if (this.commentRow !== null) {
+        Column({ space: 12 }) {
         Text(`${this.commentPath} · ${this.commentRow.newLineNumber ?? this.commentRow.oldLineNumber}`)
           .fontColor(this.color('foreground')).fontSize(this.font(14))
         Text(this.commentRow.content ?? '').fontColor(this.color('foreground-muted')).fontFamily('monospace').maxLines(4)
         TextArea({ text: this.commentText, placeholder: '输入对此行的评论' }).fontSize(this.font(16)).fontColor(this.color('foreground')).backgroundColor(this.color('input')).placeholderColor(this.color('placeholder'))
           .onChange((value: string) => { this.commentText = value; }).height(140)
         Row({ space: 12 }) {
-          Button('取消评论').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.savingComment).onClick(() => { this.commentRow = null; this.commentText = ''; })
+          Button('取消评论').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.savingComment).onClick(() => { this.commentRow = null; this.commentText = ''; this.rebuildRows(); })
           Button('加入任务草稿').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.savingComment && this.commentText.trim().length > 0)
             .onClick(() => { this.addComment(); })
         }
+        }.width('100%').padding(16)
       }
-      if (this.loading) { Text('正在加载变更…').fontColor(this.color('foreground-muted')) }
-      if (this.notice.length > 0) { Text(this.notice).fontColor(this.color('foreground-muted')).fontSize(this.font(13)) }
+      if (this.loading) { Text('正在加载变更…').fontColor(this.color('foreground-muted')).fontSize(this.font(13)).padding(24) }
+      if (this.notice.length > 0) { Text(this.notice).fontColor(this.color('foreground-muted')).fontSize(this.font(13)).padding(16) }
       if (this.errorText.length > 0) {
-        Text(this.errorText).fontSize(this.font(13)).fontColor(this.color('danger-foreground'))
+        Text(this.errorText).fontSize(this.font(13)).fontColor(this.color('danger-foreground')).padding(16)
       } else if (this.ready && this.commentRow === null) {
-        SwiftFrame({ frameJson: this.frameJson })
-          .onTouch((event: TouchEvent) => {
-            if (this.instance === null || event.touches.length === 0) return;
-            const touch = event.touches[0];
-            const phase = event.type === TouchType.Down ? 0 : (event.type === TouchType.Move ? 1 : 2);
-            SwiftBridge.ensure().touch(this.instance, phase, touch.x, touch.y);
-            this.refresh();
-          })
-          .gesture(PanGesture().onActionStart(() => { this.panStartY = this.offsetY; })
-            .onActionUpdate((event: GestureEvent) => {
-              if (this.instance === null) return;
-              this.offsetY = Math.max(0, this.panStartY - event.offsetY);
-              SwiftBridge.ensure().setScrollOffset(this.instance, 0, this.offsetY);
-              this.refresh();
-            }))
-          .width('100%')
-          .layoutWeight(1)
-          .onAreaChange((_oldArea: Area, newArea: Area) => {
-            const bridge = SwiftBridge.ensure();
-            if (this.instance !== null) {
-              this.frameWidth = Number(newArea.width);
-              this.frameHeight = Number(newArea.height);
-              bridge.setFrame(this.instance, this.frameWidth, this.frameHeight,
-                display.getDefaultDisplaySync().densityPixels);
-              this.refresh();
-            }
-          })
+        this.diffList()
+        Text('长按代码行添加评论').fontSize(this.font(10)).fontColor(this.color('foreground-muted')).padding(5)
       }
     }
-    .padding(16)
     .width('100%')
     .height('100%')
     .backgroundColor(this.color('screen'))

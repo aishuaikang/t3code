@@ -10,13 +10,14 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--ohos-native', type=Path)
 parser.add_argument('--host-test', action='store_true')
 parser.add_argument('--node-headers', type=Path, help='Also run the NAPI adapter tests on macOS')
+parser.add_argument('--markdown-archive', type=Path, help='Official react-native-nitro-markdown 0.5.0 npm archive')
 parser.add_argument('--output', type=Path, required=True)
 args = parser.parse_args()
 if not args.host_test and args.ohos_native is None:
     parser.error('--ohos-native is required for the device library')
 root = Path(__file__).resolve().parents[2]
-archive = root / 'apps/mobile/deps/react-native-nitro-markdown-0.5.0.tgz'
-expected = '743a2aee4169e147dd0386280a3e42d431390740fdae3d14166f1ed0905e5a6d'
+archive = args.markdown_archive or root / 'apps/mobile/deps/react-native-nitro-markdown-0.5.0.tgz'
+expected = '6c8280641e9eb00e6db1dbf3e5761dbafd5663f89715cb83af67fd6e7d8bba27'
 if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
     raise SystemExit('Markdown archive hash mismatch')
 args.output.mkdir(parents=True, exist_ok=True)

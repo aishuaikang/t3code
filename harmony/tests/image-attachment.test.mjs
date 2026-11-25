@@ -2,12 +2,16 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
+const attachmentFunctions=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(readFileSync(new URL('../app/entry/src/main/ets/model/FileAttachments.ets',import.meta.url),'utf8'))).toString('base64'));
+globalThis.__fileAttachmentFunctions=attachmentFunctions;
+
 let bytes=Uint8Array.from([137,80,78,71,13,10,26,10]);let calls=[];let responseCode=201;let sizeOverride;
 const fs={OpenMode:{READ_ONLY:0},open:async()=>({fd:1}),stat:async()=>({size:sizeOverride??bytes.length}),close:async()=>{},read:async(fd,buffer,{offset})=>{const count=Math.min(3,bytes.length-offset);new Uint8Array(buffer).set(bytes.slice(offset,offset+count));return count;}};
-const http={RequestMethod:{POST:'POST'},createHttp:()=>({request:async(url,options)=>{calls.push({url,options});return{responseCode};},destroy:()=>{}})};
+let progressHandler;
+const http={RequestMethod:{POST:'POST'},createHttp:()=>({on:(event,callback)=>{progressHandler=callback},request:async(url,options)=>{calls.push({url,options});progressHandler?.({sendSize:4,totalSize:8});return{responseCode};},destroy:()=>{}})};
 globalThis.__imageMocks={fs,http};
 const source=readFileSync(new URL('../app/entry/src/main/ets/connection/ImageAttachment.ets',import.meta.url),'utf8').replace(/^import .*;$/gm,'');
-const {imageMime,uploadImage,imageUploadExists,deleteImageUpload}=await import('data:text/javascript;base64,'+Buffer.from('const {fs,http}=globalThis.__imageMocks;\n'+stripTypeScriptTypes(source)).toString('base64'));
+const {imageMime,uploadImage,imageUploadExists,deleteImageUpload}=await import('data:text/javascript;base64,'+Buffer.from('const {fs,http}=globalThis.__imageMocks;const {attachmentMime,fileUploadLimit}=globalThis.__fileAttachmentFunctions;\n'+stripTypeScriptTypes(source)).toString('base64'));
 const rpc={call:async(method,payload)=>{calls.push({method,payload});return{attachmentId:'owned-image',relativeUrl:'/api/attachments/upload/test?token=fixture'};}};
 test('uploads exact bytes after partial file reads and returns a wire image reference',async()=>{
  calls=[];const result=await uploadImage(rpc,'http://fixture','picked-uri');
@@ -40,4 +44,32 @@ test('filename fallback respects the upload contract for blank and overlong name
  for(const name of ['   ','x'.repeat(256)]){
   const result=await uploadImage(rpc,'http://fixture','picked-uri',name);assert.equal(result.name,'image.png');
  }
+});
+test('upload progress comes from transmitted bytes and reports completion only after a successful response',async()=>{
+ const updates=[];await uploadImage(rpc,'http://fixture','picked-uri','image.png',percent=>updates.push(percent));
+ assert.deepEqual(updates,[0,50,100]);
+ responseCode=500;const failed=[];
+ try{await assert.rejects(uploadImage(rpc,'http://fixture','picked-uri','image.png',percent=>failed.push(percent)),/500/);assert.deepEqual(failed,[0,50]);}
+ finally{responseCode=201;}
+});
+
+test('document upload preserves original bytes and uses the file contract and advertised limit',async()=>{
+ const original=bytes;bytes=Uint8Array.from(Buffer.from('%PDF-1.7\n中文文档\0\xff'));
+ try {
+  calls=[];const result=await uploadImage(rpc,'http://fixture','document-uri','说明.pdf',()=>{},'file',1024);
+  assert.deepEqual(result,{type:'file',id:'owned-image',name:'说明.pdf',mimeType:'application/pdf',sizeBytes:bytes.length});
+  assert.deepEqual(calls[0].payload,{type:'file',name:'说明.pdf',mimeType:'application/pdf',sizeBytes:bytes.length});
+  assert.deepEqual(new Uint8Array(calls.find(c=>c.url).options.extraData),bytes);
+  calls=[];await assert.rejects(uploadImage(rpc,'http://fixture','document-uri','说明.pdf',()=>{},'file',bytes.length-1),/附件须/);
+  assert.equal(calls.length,0);
+  await assert.rejects(uploadImage(rpc,'http://fixture','document-uri','说明.pdf',()=>{},'file',0),/不支持/);
+  responseCode=500;await assert.rejects(uploadImage(rpc,'http://fixture','document-uri','说明.pdf',()=>{},'file',1024),/附件上传失败/);
+  assert.deepEqual(calls.at(-1),{method:'attachments.delete',payload:{attachmentId:'owned-image'}});
+ } finally {bytes=original;responseCode=201;}
+});
+
+test('file limits clamp to the wire maximum and reject absent or malformed capabilities',()=>{
+ for(const limit of [undefined,0,-1,NaN,Infinity,1.5])assert.equal(attachmentFunctions.fileUploadLimit(limit),0);
+ assert.equal(attachmentFunctions.fileUploadLimit(1024),1024);
+ assert.equal(attachmentFunctions.fileUploadLimit(100*1024*1024),50*1024*1024);
 });

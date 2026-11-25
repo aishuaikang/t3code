@@ -40,3 +40,20 @@ test('separator-only search returns the normal directory view',()=>{
  const entries=[{path:'src/components/Chat.tsx',kind:'file'},{path:'README.md',kind:'file'}];
  assert.deepEqual(model.directoryEntries(entries,'','---'),model.directoryEntries(entries,'',''));
 });
+
+test('binary documents use original-file downloads and Chinese filenames remain intact',()=>{
+ for(const path of ['报告.PDF','资料.docx','表格.xlsx','归档.zip','image.png'])assert.equal(model.binaryFilePath(path),true);
+ for(const path of ['src/index.ts','README.md','config.json','notes.txt'])assert.equal(model.binaryFilePath(path),false);
+ assert.equal(model.downloadFileName('/work/output/2023010557张英霄.pdf'),'2023010557张英霄.pdf');
+ assert.equal(model.downloadFileName('C:\\work\\报告.pdf'),'报告.pdf');
+ assert.equal(model.downloadFileName('..'),'文件');
+});
+
+test('file and connection failures remain distinguishable in the download UI',()=>{
+ assert.match(model.fileErrorText('AssetWorkspaceAssetNotFoundError: Workspace asset was not found.'),/文件不存在或已移动/);
+ assert.match(model.fileErrorText('AssetAttachmentNotFoundError: Attachment was not found.'),/文件不存在或已移动/);
+ assert.match(model.fileErrorText('ProjectReadFileError: Failed to read workspace file'),/可尝试下载原文件/);
+ assert.match(model.fileErrorText('RPC connection closed'),/连接已断开/);
+ assert.equal(model.binaryFileError('{"failure": "binary_file"}'),true);
+ assert.equal(model.binaryFileError('file not found'),false);
+});

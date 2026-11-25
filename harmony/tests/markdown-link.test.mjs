@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {stripTypeScriptTypes} from 'node:module';
 const source=readFileSync(new URL('../app/entry/src/main/ets/model/MarkdownLink.ets',import.meta.url),'utf8');
-const {markdownFileLink}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
+const {markdownFileLink, markdownImageFileLink}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
 test('opens relative, absolute and encoded file URLs inside the active project',()=>{
  for(const href of ['src/a.ts','./src/a.ts','/repo/src/a.ts','file:///repo/src/a.ts','src/sub/../a.ts'])assert.equal(markdownFileLink(href,'/repo')?.path,'src/a.ts');
  assert.deepEqual(markdownFileLink('docs/hello%20world.md#L12','/repo'),{path:'docs/hello world.md',line:12});
@@ -19,4 +19,12 @@ test('resolves document links from their directory while keeping the project bou
  assert.deepEqual(markdownFileLink('../README.md','/repo','docs'),{path:'README.md'});
  assert.deepEqual(markdownFileLink('/repo/root.md','/repo','docs'),{path:'root.md'});
  assert.equal(markdownFileLink('../../secret','/repo','docs'),null);
+});
+
+test('an original screenshot link keeps the host path and filename for the image viewer',()=>{
+ assert.deepEqual(markdownImageFileLink('/agent/output/Screen%20Shot.png','/workspace'),{path:'/agent/output/Screen Shot.png',name:'Screen Shot.png'});
+ assert.deepEqual(markdownImageFileLink('file:///agent/output/figure.webp',''),{path:'/agent/output/figure.webp',name:'figure.webp'});
+ assert.deepEqual(markdownImageFileLink('../media/flow.svg','/workspace','docs'),{path:'/workspace/media/flow.svg',name:'flow.svg'});
+ assert.deepEqual(markdownImageFileLink('figure.jpg','/workspace','docs'),{path:'/workspace/docs/figure.jpg',name:'figure.jpg'});
+ for(const href of ['https://example.test/photo.png','//example.test/photo.png','./note.md','../../secret.png','file://other/photo.png']) assert.equal(markdownImageFileLink(href,'/workspace'),null);
 });

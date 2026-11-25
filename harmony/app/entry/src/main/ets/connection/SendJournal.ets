@@ -5,8 +5,8 @@ export class SendJournal {
   pending: StartTurnCommand | null = null;
   private store: DraftStore;
   private constructor(store: DraftStore) { this.store = store; }
-  static async open(filesDir: string, environmentId: string, threadId: string): Promise<SendJournal> {
-    const store = await DraftStore.open(filesDir, environmentId, `send:${threadId}`);
+  static async open(filesDir: string, environmentId: string, threadId: string, scope: string = ''): Promise<SendJournal> {
+    const store = await DraftStore.open(filesDir, environmentId, `send:${scope || threadId}`);
     const journal = new SendJournal(store);
     const raw = await store.load();
     if (raw) {

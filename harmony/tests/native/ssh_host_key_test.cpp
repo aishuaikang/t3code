@@ -32,8 +32,13 @@ int main() {
   has_hash = true;
   assert(t3ssh::AuthenticatePinned(nullptr, "user", "password", pin) == nullptr);
   assert(auth_calls == 1);
-  auth_result = -18;
-  assert(t3ssh::AuthenticatePinned(nullptr, "user", "password", pin) != nullptr);
+  auth_result = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
+  assert(std::string(t3ssh::AuthenticatePinned(nullptr, "user", "password", pin)) == "SSH authentication failed");
   assert(auth_calls == 2);
+  for (int code : {LIBSSH2_ERROR_TIMEOUT, LIBSSH2_ERROR_SOCKET_TIMEOUT, LIBSSH2_ERROR_SOCKET_SEND,
+                   LIBSSH2_ERROR_SOCKET_RECV, LIBSSH2_ERROR_SOCKET_DISCONNECT}) {
+    auth_result = code;
+    assert(std::string(t3ssh::AuthenticatePinned(nullptr, "user", "password", pin)) == "SSH socket error during sign-in");
+  }
   std::cout << "host key checked before authentication; missing/mismatched keys rejected\n";
 }

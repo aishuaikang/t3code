@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {stripTypeScriptTypes} from 'node:module';
 const source=readFileSync(new URL('../app/entry/src/main/ets/model/MarkdownBlocks.ets',import.meta.url),'utf8').replace(/^import .*;$/gm,'');
-const {markdownBlocks}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
+const {markdownBlocks,markdownParts}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
 const n=(type,children=[],extra={})=>({type,children,...extra});
 const t=text=>n('text',[],{content:text});
 test('keeps nested inline styles, escaped code and paragraph breaks',()=>{
@@ -43,11 +43,30 @@ test('keeps tight-list inline siblings in one paragraph around nested block boun
  assert.equal(blocks[0].runs[1].bold,true);assert.equal(blocks[1].runs[1].italic,true);
 });
 
-test('list child quotes retain paragraphs and child tables retain rows',()=>{
+test('keeps one blockquote around its paragraphs, distinct from list markers and surrounding prose',()=>{
  const result=markdownBlocks(n('list',[n('list_item',[t('outer'),
-   n('blockquote',[n('paragraph',[t('first')]),n('paragraph',[t('second')])]),
+   n('blockquote',[n('paragraph',[t('a long first paragraph')]),n('paragraph',[t('second')]),
+     n('list',[n('list_item',[t('bullet')])]),n('blockquote',[n('paragraph',[n('link',[t('linked')],{href:'notes.md'})])])]),
    n('table',[n('table_row',[n('table_cell',[t('cell')])])])])]));
- assert.deepEqual(result.map(b=>[b.kind,b.marker,b.depth,b.runs.map(r=>r.text).join('')]),[
-   ['paragraph','•',0,'outer'],['paragraph','│',1,'first'],['paragraph','│',1,'second'],['table','',0,'']]);
- assert.equal(result[3].rows[0].cells[0].runs[0].text,'cell');
+ assert.deepEqual(result.map(b=>[b.kind,b.marker,b.depth]),[['paragraph','•',0],['blockquote','',0],['table','',0]]);
+ const quoted=result[1].children;
+ assert.deepEqual(quoted.map(b=>[b.kind,b.marker,b.runs.map(r=>r.text).join('')]),[
+   ['paragraph','','a long first paragraph'],['paragraph','','second'],['paragraph','•','bullet'],['blockquote','','']]);
+ assert.equal(quoted[3].children[0].runs[0].href,'notes.md');
+ assert.equal(result[2].rows[0].cells[0].runs[0].text,'cell');
+});
+
+test('image nodes retain their source even without alt text and preserve surrounding paragraph order',()=>{
+ const doc=n('paragraph',[t('Before '),n('image',[t('duplicate alt')],{href:'figures/flow.svg',alt:'Flow'}),t(' after '),n('image',[],{href:'https://example.test/plot.png?a=1&amp;b=2',alt:''})]);
+ const runs=markdownBlocks(doc)[0].runs;
+ assert.equal(runs[1].imageSource,'figures/flow.svg');assert.equal(runs[1].text,'Flow');
+ assert.equal(runs[3].imageSource,'https://example.test/plot.png?a=1&b=2');assert.equal(runs[3].text,'');
+ assert.deepEqual(markdownParts(runs).map(p=>p.image?.imageSource??p.runs.map(r=>r.text).join('')),['Before ','figures/flow.svg',' after ','https://example.test/plot.png?a=1&b=2']);
+});
+test('images in list items and table cells remain images while code keeps literal image syntax',()=>{
+ const image=n('image',[],{href:'../media/image.png',alt:'A'});
+ const blocks=markdownBlocks(n('document',[n('list',[n('list_item',[image])]),n('table',[n('table_row',[n('table_cell',[image])])]),n('code_block',[t('![A](image.png)')],{language:'md'})]));
+ assert.equal(blocks[0].marker,'•');assert.equal(markdownParts(blocks[0].runs)[0].image.imageSource,'../media/image.png');
+ assert.equal(markdownParts(blocks[1].rows[0].cells[0].runs)[0].image.imageSource,'../media/image.png');
+ assert.equal(markdownParts(blocks[2].runs)[0].image,undefined);assert.equal(blocks[2].runs[0].text,'![A](image.png)');
 });

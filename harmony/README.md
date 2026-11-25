@@ -6,9 +6,10 @@ The app, Swift compatibility layer, native bridge and focused tests live here.
 
 ## Build and run
 
-The app requires DevEco Studio and its bundled HarmonyOS SDK. The current
-project configuration targets HarmonyOS 6.1 (API 23), with a compatible version
-of HarmonyOS 5.0 (API 12). It has been installed on a nova 12 Pro running API 24.
+Use DevEco Studio with HarmonyOS SDK 26.0.0 or newer. The app targets 26.0.0
+for system immersive materials and keeps a minimum of HarmonyOS 5.0 (API 12).
+If you already have a local signing profile in `build-profile.json5`, update its
+`targetSdkVersion` to `26.0.0` and keep your existing signing configuration.
 
 ```sh
 cp harmony/app/build-profile.example.json5 harmony/app/build-profile.json5
@@ -44,7 +45,15 @@ Disconnecting keeps it in the saved connections list; use Forget to remove the
 local credential and require pairing again. SSH connections additionally save the
 password in the secure asset store and reconnect to the saved remote service port,
 checking the host fingerprint and environment identity. Direct and SSH access to
-the same environment remain separate saved connections.
+the same environment remain separate saved connections. To reach one environment
+through two SSH gateways, add each gateway separately and select the route by
+its SSH address. For an existing T3 service, enter the service host as seen by
+that gateway; leave it blank if T3 runs on the gateway itself. Both routes show
+the same threads and drafts. You can add or switch routes while another connects.
+Expand a backup route and choose **设为主用** to make it the default. When the
+primary is unreachable, the app tries the other saved SSH routes for that same
+environment. Using a backup does not change the default; credential, host-key
+or environment identity errors require attention instead of automatic failover.
 
 Pending question answers remain available when navigating away from a task and
 back during the same app session. They are cleared when the request is resolved.
@@ -83,6 +92,9 @@ machine's task list. Files, Diff, and Terminal are in the conversation's tool me
 Completed responses keep their final answer visible and fold the preceding process
 under the elapsed-time row. Expand it to review grouped tool calls, then expand
 individual calls for their output. Long-press a message to copy its text.
+When editing images in the gallery, each image keeps its own explanation, marks
+and reference attachments until the preview closes. Only the selected image’s
+references are passed to the conversation.
 
 The task composer expands while editing and collapses when focus leaves it without
 discarding the draft. Compact permission and execution icons open the same controls.
@@ -115,6 +127,14 @@ platform networking/native loading. They cover RPC framing, stream ACKs,
 disconnect failures, OAuth form fields, fresh tickets, snapshots/deltas, turn
 commands, checkpoint counts and diff rows. They do not replace ArkTS compilation
 or device testing.
+
+When changing rounded surfaces, check both a thread and the new-task sheet with
+several lines of draft text. With the keyboard open, type `/` and `@`, then
+scroll the suggestions to the last row. Text, icons, and pressed backgrounds
+must stay inside the same outline as the glass, in both light and dark themes.
+Scroll a message behind the composer and a task behind the bottom navigation.
+Tap and hold the gaps between controls: neither underlying item should react.
+The controls themselves must still work, and the uncovered list must scroll.
 
 The Swift runner exercises module registration, attributed text storage,
 composer creation, diff display-list rendering and interactions, and terminal
@@ -311,8 +331,10 @@ clang++ -std=c++17 -I harmony/napi/ssh \
 Open **Settings → Environment connections** to view saved endpoints, switch
 environments, or pair another direct or SSH connection. The current connection
 is marked in the list. Switching closes the previous client transport; saved
-credentials remain available after a failed connection attempt. Forget asks for
-confirmation and disconnects the selected connection if it is current.
+credentials remain available after a failed connection attempt. Forget removes
+the selected route after confirmation. If you forget the active route, the app
+tries another saved route to the same environment. Forgetting the last route
+also closes that environment’s offline task list.
 
 Open **Settings → Archived threads** to view the current environment’s archived
 tasks. This clears the home search and project filter. Choose newest or oldest

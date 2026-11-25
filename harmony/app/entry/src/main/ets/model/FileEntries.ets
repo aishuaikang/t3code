@@ -3,8 +3,23 @@ export interface FileEntry {
   kind: string;
 }
 
+export function binaryFilePath(path: string): boolean {
+  return /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|7z|rar|gz|bz2|xz|tar|tgz|png|jpe?g|gif|webp|avif|heic|heif|bmp|ico|icns|mp[34]|mov|mkv|webm|wav|ogg|m4a|flac|sqlite3?|db|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|hap|apk)$/i.test(path);
+}
+
+export function binaryFileError(message: string): boolean { return /"failure"\s*:\s*"binary_file"/.test(message); }
+
+export function downloadFileName(path: string): string {
+  const name = (path.split(/[\\/]/).pop() ?? '').replace(/[\x00-\x1f\x7f:*?"<>|]/g, '_').trim();
+  return !name || /^\.+$/.test(name) ? '文件' : name;
+}
+
 export function fileErrorText(message: string): string {
-  if (message.includes('"failure":"binary_file"')) return '此文件不是文本，无法在文本预览中打开。';
+  if (binaryFileError(message)) return '此文件不是文本，无法在文本预览中打开。';
+  if (/Asset(WorkspaceAsset|Attachment)NotFoundError|Workspace asset was not found|Attachment was not found/.test(message)) return '文件不存在或已移动，请确认电脑上的原文件仍然存在。';
+  if (message.includes('AssetPreviewTypeValidationError')) return '当前服务器不支持下载此类型的文件，请更新电脑端后重试。';
+  if (/AssetWorkspaceContext|AssetWorkspaceResolutionError/.test(message)) return '无法找到文件所在的会话目录，请返回原会话重试。';
+  if (message.includes('ProjectReadFileError')) return '无法读取此文件，可尝试下载原文件；请确认电脑上的文件仍在原目录中。';
   if (message.includes('RPC connection') || message.includes('RPC is not connected')) return '连接已断开，请刷新重试。';
   if (message.startsWith('RPC ')) return '无法加载项目文件，请刷新重试。';
   return message;

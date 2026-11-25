@@ -21,7 +21,7 @@ inline bool WouldBlock() { return errno == EAGAIN || errno == EWOULDBLOCK || err
 inline void CloseSocket(int& fd) {
   if (fd >= 0) { shutdown(fd, SHUT_RDWR); close(fd); fd = -1; }
 }
-struct Forward { int listen_fd; uint16_t remote_port; };
+struct Forward { int listen_fd; std::string remote_host; uint16_t remote_port; };
 struct Client {
   int fd;
   LIBSSH2_CHANNEL* channel;
@@ -40,6 +40,7 @@ struct Session {
   std::vector<Client> clients;
   uint64_t next_forward_id = 1;
   int pending_fd = -1;
+  std::string pending_host;
   uint16_t pending_port = 0;
   Clock::time_point pending_since, keepalive_at = Clock::now();
 
@@ -61,7 +62,7 @@ struct Session {
     clients.clear();
     CloseSocket(socket_fd);
   }
-  uint64_t OpenForward(int local_port, int remote_port) {
+  uint64_t OpenForward(const std::string& remote_host, int local_port, int remote_port) {
     if (!running) throw std::runtime_error("SSH not connected");
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in address{};
@@ -72,26 +73,27 @@ struct Session {
       CloseSocket(fd); throw std::runtime_error("SSH local bind failed");
     }
     const auto id = next_forward_id++;
-    forwards.emplace(id, Forward{fd, static_cast<uint16_t>(remote_port)});
+    forwards.emplace(id, Forward{fd, remote_host, static_cast<uint16_t>(remote_port)});
     return id;
   }
   bool Pump() {
     if (!running) return false;
     // libssh2 keeps an in-progress channel-open operation in the session. Only
-    // one such operation may be retried at a time, with the same target port.
+    // one such operation may be retried at a time, with the same destination.
     if (pending_fd < 0 && clients.size() < 32) {
       for (auto& item : forwards) {
         int fd = accept(item.second.listen_fd, nullptr, nullptr);
         if (fd < 0) continue;
         if (!Nonblocking(fd)) { CloseSocket(fd); continue; }
         pending_fd = fd;
+        pending_host = item.second.remote_host;
         pending_port = item.second.remote_port;
         pending_since = Clock::now();
         break;
       }
     }
     if (pending_fd >= 0) {
-      auto* channel = libssh2_channel_direct_tcpip(session, "127.0.0.1", pending_port);
+      auto* channel = libssh2_channel_direct_tcpip(session, pending_host.c_str(), pending_port);
       if (channel) {
         clients.push_back(Client{pending_fd, channel, {}, {}});
         pending_fd = -1;
@@ -120,21 +122,30 @@ struct Session {
         if (code == 0) client.eof_sent = true;
         else if (code != LIBSSH2_ERROR_EAGAIN) client.closing = true;
       }
-      if (!client.closing && !client.remote_eof && client.to_local.empty()) {
-        const auto count = libssh2_channel_read(client.channel, buffer, sizeof(buffer));
-        if (count > 0) client.to_local.assign(buffer, static_cast<size_t>(count));
-        else if (count < 0 && count != LIBSSH2_ERROR_EAGAIN) client.closing = true;
-        if (count <= 0 && libssh2_channel_eof(client.channel)) client.remote_eof = true;
-      }
-      if (!client.closing && !client.to_local.empty()) {
+      // Drain ready reply bytes before the worker goes back to sleep. Bound each
+      // channel's turn so a large snapshot cannot starve other subscriptions.
+      for (int batch = 0; batch < 16 && !client.closing; ++batch) {
+        if (client.to_local.empty()) {
+          if (client.remote_eof) break;
+          const auto count = libssh2_channel_read(client.channel, buffer, sizeof(buffer));
+          if (count <= 0) {
+            if (count < 0 && count != LIBSSH2_ERROR_EAGAIN) client.closing = true;
+            if (libssh2_channel_eof(client.channel)) client.remote_eof = true;
+            break;
+          }
+          client.to_local.assign(buffer, static_cast<size_t>(count));
+        }
 #ifdef MSG_NOSIGNAL
         const int flags = MSG_NOSIGNAL;
 #else
         const int flags = 0;
 #endif
         const auto count = send(client.fd, client.to_local.data(), client.to_local.size(), flags);
-        if (count > 0) client.to_local.erase(0, static_cast<size_t>(count));
-        else if (count < 0 && !WouldBlock()) client.closing = true;
+        if (count <= 0) {
+          if (count < 0 && !WouldBlock()) client.closing = true;
+          break;
+        }
+        client.to_local.erase(0, static_cast<size_t>(count));
       }
       if (client.remote_eof && client.to_local.empty()) {
         shutdown(client.fd, SHUT_WR);

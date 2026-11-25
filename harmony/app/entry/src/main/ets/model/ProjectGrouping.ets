@@ -79,3 +79,18 @@ export function groupProjects(projects: ProjectShell[], environmentId: string, m
   }
   return Array.from(groups.values());
 }
+
+export function projectWorkspaces(projects: ProjectShell[], group: ProjectGroup): ProjectShell[] {
+  const paths = new Map<string, ProjectShell[]>();
+  for (const project of projects.filter((entry: ProjectShell) => group.projectIds.includes(entry.id))) {
+    const key = normalizedPath(project.workspaceRoot);
+    paths.set(key, (paths.get(key) ?? []).concat([project]));
+  }
+  return Array.from(paths.values()).map((entries: ProjectShell[]) => newest(entries));
+}
+
+export function projectGroupMatches(projects: ProjectShell[], group: ProjectGroup, query: string): boolean {
+  const term = query.trim().toLocaleLowerCase();
+  return !term || group.label.toLocaleLowerCase().includes(term) || projects.some((project: ProjectShell) =>
+    group.projectIds.includes(project.id) && `${project.title} ${project.workspaceRoot}`.toLocaleLowerCase().includes(term));
+}

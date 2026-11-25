@@ -1,6 +1,7 @@
 import { AppIcon } from './AppIcon';
 import { EnvironmentSession } from '../connection/Environment';
 import { ThemeRuntime } from '../connection/ThemeRuntime';
+import { projectInitials, projectTint } from '../model/TaskPresentation';
 
 interface ProjectResource { _tag: string; cwd: string; path?: string; }
 interface ProjectAssetRequest { resource: ProjectResource; }
@@ -12,6 +13,8 @@ export struct ProjectIcon {
   @Prop @Watch('reload') cwd: string = '';
   @Prop @Watch('reload') faviconPath: string = '';
   @Prop iconSize: number = 16;
+  @Prop label: string = '';
+  @Prop chatFallback: boolean = false;
   @StorageLink('themeKey') themeKey: string = 't3-code-light';
   @State source: string = '';
   private revision: number = 0;
@@ -48,8 +51,12 @@ export struct ProjectIcon {
       if (this.source) {
         Image(this.source).width(this.iconSize).height(this.iconSize).objectFit(ImageFit.Contain).borderRadius(3)
           .onError(() => { this.source = ''; })
+      } else if (this.label && this.label !== 'No project') {
+        Text(projectInitials(this.label)).fontSize(this.iconSize * 0.43).fontWeight(FontWeight.Medium)
+          .fontColor(projectTint(this.label)).width(this.iconSize).height(this.iconSize).textAlign(TextAlign.Center)
+          .backgroundColor('#22' + projectTint(this.label).slice(1)).borderRadius(7)
       } else {
-        AppIcon({ name: 'folder', iconSize: this.iconSize, tint: ThemeRuntime.color(this.themeKey, 'foreground-muted') })
+        AppIcon({ name: this.chatFallback ? 'chat' : 'folder', iconSize: this.iconSize, tint: ThemeRuntime.color(this.themeKey, 'foreground-muted') })
       }
     }.width(this.iconSize).height(this.iconSize)
   }

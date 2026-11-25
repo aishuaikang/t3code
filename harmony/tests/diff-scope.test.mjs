@@ -3,10 +3,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 const source=readFileSync(new URL('../app/entry/src/main/ets/model/DiffScope.ets',import.meta.url),'utf8');
-const {diffScopes,checkpointRequest}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
+const {diffScopes,checkpointRequest,projectionCheckpoints}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
 test('lists only ready checkpoints newest first, plus cumulative and working tree',()=>{
- assert.deepEqual(diffScopes([{checkpointTurnCount:2,status:'ready'},{checkpointTurnCount:3,status:'pending'},{checkpointTurnCount:1,status:'ready'}]).map(x=>x.id),['all','turn:2','turn:1','workspace']);
- assert.deepEqual(diffScopes([]).map(x=>x.id),['workspace']);
+ assert.deepEqual(diffScopes([{checkpointTurnCount:2,status:'ready'},{checkpointTurnCount:3,status:'pending'},{checkpointTurnCount:1,status:'ready'}]).map(x=>x.id),['all','turn:2','turn:1','workspace','branch']);
+ assert.deepEqual(diffScopes([]).map(x=>x.id),['workspace','branch']);
+});
+test('V2 checkpoint scopes expose app run numbers and omit child, failed and duplicate checkpoints',()=>{
+ const checkpoints=[{appRunOrdinal:7,scopeId:'root',status:'ready'}, {appRunOrdinal:7,scopeId:'root',status:'ready'},
+   {appRunOrdinal:6,scopeId:'child',status:'ready'}, {appRunOrdinal:8,scopeId:'root',status:'error'},
+   {appRunOrdinal:null,scopeId:'root',status:'ready'}];
+ const scopes=[{id:'root',advancesAppRunCount:true},{id:'child',advancesAppRunCount:false}];
+ assert.deepEqual(projectionCheckpoints({checkpoints,checkpointScopes:scopes}),[{checkpointTurnCount:7,status:'ready'}]);
+ assert.deepEqual(projectionCheckpoints({}),[]);
 });
 test('turn diff compares to previous checkpoint and first turn uses full diff',()=>{
  assert.deepEqual(checkpointRequest('t',2,false),{method:'orchestration.getTurnDiff',payload:{threadId:'t',fromTurnCount:1,toTurnCount:2,ignoreWhitespace:false}});

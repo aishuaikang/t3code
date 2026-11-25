@@ -22,6 +22,37 @@ export interface ThemePalette {
   terminal: TerminalTheme;
   diff: Record<string, string>;
 }
+function mixHex(ink: string, surface: string, amount: number): string {
+  let color = '#';
+  for (let i = 1; i < 7; i += 2) {
+    const front = parseInt(ink.slice(i, i + 2), 16), back = parseInt(surface.slice(i, i + 2), 16);
+    color += Math.round(back + (front - back) * amount).toString(16).padStart(2, '0');
+  }
+  return color;
+}
+
+// Resolve chat surface and label colors once per palette.
+function prepareChatColors(palette: ThemePalette): void {
+  const colors = palette.colors;
+  const card = colors['--color-card'], ink = colors['--color-foreground'], link = colors['--color-md-link'];
+  const reply = mixHex(ink, card, palette.scheme === 'dark' ? 0.13 : 0.11);
+  const accent = palette.id === 't3-code' ? colors['--color-user-bubble'] : link;
+  colors['--color-chat-reply'] = reply;
+  colors['--color-chat-user'] = mixHex(accent, reply, 0.18);
+  colors['--color-chat-outline'] = mixHex(ink, card, 0.35);
+  colors['--color-chat-link'] = mixHex(ink, link, 0.74);
+  colors['--color-chat-secondary'] = mixHex(ink, reply, 0.9);
+  const dark = palette.scheme === 'dark';
+  const hue = palette.id === 't3-code' ? mixHex('#408b9c', link, 0.4) : colors['--color-primary'];
+  const glowHue = palette.id === 't3-code' ? '#57a4ad' : hue;
+  colors['--color-glass-depth'] = mixHex(hue, dark ? '#322d31' : '#66758a', dark ? 0.55 : 0.5);
+  colors['--color-glass-glow'] = mixHex(glowHue, dark ? '#ffdeb8' : '#d2ede9', 0.48);
+  colors['--color-progress-start'] = mixHex(hue, ink, dark ? 0.55 : 0.9);
+  colors['--color-progress-end'] = mixHex(glowHue, ink, dark ? 0.25 : 0.55);
+  colors['--color-progress-foreground'] = dark ? colors['--color-screen'] : card;
+  colors['--color-glass-label'] = mixHex(ink, colors['--color-foreground-muted'], dark ? 0.9 : 0.63);
+}
+
 export class ThemeRuntime {
   private static palettes: ThemePalette[] = [];
   private static context: common.UIAbilityContext;
@@ -29,20 +60,25 @@ export class ThemeRuntime {
   private static dark: boolean = false;
   private static mainWindow: window.Window | null = null;
   private static windowUpdates: Promise<void> = Promise.resolve();
+  private static imagePreview: boolean = false;
 
   static attachWindow(value: window.Window): Promise<void> {
     ThemeRuntime.mainWindow = value;
     return ThemeRuntime.syncWindow();
   }
-  static detachWindow(): void { ThemeRuntime.mainWindow = null; }
+  static detachWindow(): void { ThemeRuntime.mainWindow = null; ThemeRuntime.imagePreview = false; }
+  static setImagePreview(active: boolean): Promise<void> {
+    ThemeRuntime.imagePreview = active;
+    return ThemeRuntime.syncWindow();
+  }
   static syncWindow(): Promise<void> {
     ThemeRuntime.windowUpdates = ThemeRuntime.windowUpdates.then(async () => {
       const target = ThemeRuntime.mainWindow;
       if (target === null) return;
       try {
         const key = resolveThemeKey(ThemeRuntime.selection, ThemeRuntime.dark);
-        const foreground = ThemeRuntime.palette(key).scheme === 'dark' ? '#FFFFFFFF' : '#FF191919';
-        target.setWindowBackgroundColor(ThemeRuntime.color(key, 'screen'));
+        const foreground = ThemeRuntime.imagePreview || ThemeRuntime.palette(key).scheme === 'dark' ? '#FFFFFFFF' : '#FF191919';
+        target.setWindowBackgroundColor(ThemeRuntime.imagePreview ? '#000000' : ThemeRuntime.color(key, 'screen'));
         const bars: window.SystemBarProperties = {
           statusBarColor: '#00000000', navigationBarColor: '#00000000',
           statusBarContentColor: foreground, navigationBarContentColor: foreground,
@@ -59,6 +95,7 @@ export class ThemeRuntime {
     ThemeRuntime.context = context;
     ThemeRuntime.palettes = JSON.parse(util.TextDecoder.create('utf-8').decodeToString(
       context.resourceManager.getRawFileContentSync('theme-palettes.json'))) as ThemePalette[];
+    ThemeRuntime.palettes.forEach(prepareChatColors);
     ThemeRuntime.dark = context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
     try {
       await ThemeRuntime.reload();
@@ -100,6 +137,7 @@ export class ThemeRuntime {
     ThemeRuntime.publish();
   }
   private static publish(): void {
+    AppStorage.SetOrCreate('themeSelection', ThemeRuntime.selection);
     AppStorage.SetOrCreate('themeKey', resolveThemeKey(ThemeRuntime.selection, ThemeRuntime.dark));
     ThemeRuntime.syncWindow();
   }

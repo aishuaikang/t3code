@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 const source=readFileSync(new URL('../app/entry/src/main/ets/model/ProjectGrouping.ets',import.meta.url),'utf8').replace("import { ProjectShell } from './Models';",'');
-const {groupProjects}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
+const {groupProjects,projectWorkspaces,projectGroupMatches}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
 const p=(id,root,relative='',extra={})=>({id,title:id,workspaceRoot:root+relative,repositoryIdentity:{canonicalKey:'github:team/repo',rootPath:root,name:'repo',displayName:'team/repo'},...extra});
 test('repository and repository_path group matching clones while keeping monorepo paths separate',()=>{
  const projects=[p('a','/repo','/app'),p('b','/clone','/app'),p('c','/repo','/server')];
@@ -29,4 +29,13 @@ test('unidentified projects never merge by name and stale roots use repository f
 test('Windows paths compare case and separators while POSIX preserves case',()=>{
  assert.equal(groupProjects([p('a','C:\\Repo','\\app'),p('b','d:/clone','/APP')],'env','repository_path').length,1);
  assert.equal(groupProjects([p('a','/repo','/App'),p('b','/clone','/app')],'env','repository_path').length,2);
+});
+test('project picker shows each physical workspace once and can search Chinese titles and paths',()=>{
+ const projects=[p('old','C:/Repo','',{updatedAt:'2026-01-01'}),p('new','c:\\repo\\','',{updatedAt:'2026-11-15'}),p('other','/工作/副本','',{title:'客户端'})];
+ const group=groupProjects(projects,'env','repository')[0];
+ assert.deepEqual(projectWorkspaces(projects,group).map(p=>p.id),['new','other']);
+ assert.equal(projectGroupMatches(projects,group,'客户端'),true);
+ assert.equal(projectGroupMatches(projects,group,'副本'),true);
+ assert.equal(projectGroupMatches(projects,group,'C:/REPO'),true);
+ assert.equal(projectGroupMatches(projects,group,'missing'),false);
 });

@@ -1,3 +1,7 @@
+import { ChatGlass, immersiveMaterial } from './ChatGlass';
+import { AppIcon } from './AppIcon';
+import { DraftStore } from '../connection/DraftStore';
+import { terminalExcerpt } from '../model/TerminalOutput';
 import { Typography, resolveTypography, scaledFontSize } from '../model/Typography';
 import { ThemeRuntime } from '../connection/ThemeRuntime';
 import window from '@ohos.window';
@@ -20,6 +24,15 @@ import { TerminalState, TerminalEvent, terminalAttach, terminalWrite, terminalRe
 @Component
 struct TerminalPage {
   @State selecting: boolean = false;
+  @State controlsOpen: boolean = false;
+  @State lineEntry: boolean = false;
+  @State outputOpen: boolean = false;
+  @State outputLines: string[] = [];
+  @State outputStart: number = 0;
+  @State outputEnd: number = 0;
+  @State outputAnchor: number = -1;
+  @State outputError: string = '';
+  @State attachingOutput: boolean = false;
   private anchorX: number = 0;
   private anchorY: number = 0;
   private selectionPoint(event: GestureEvent): number[] {
@@ -164,7 +177,7 @@ struct TerminalPage {
       this.status = '正在连接终端…';
     });
     if (this.closedByUser) this.status = '终端已关闭';
-    else this.connection.start();
+    // onPageShow starts the subscription once the page is visible.
   }
 
   aboutToDisappear(): void {
@@ -363,35 +376,101 @@ struct TerminalPage {
     }
   }
 
+  private async openOutput(): Promise<void> {
+    if (this.terminal === null) return;
+    try {
+      await this.lineInput();
+      if (!this.active || this.terminal === null) return;
+      const lines: string[] = [];
+      for (let y = 0; y < this.rows; y++) {
+        terminalNative.selectRange(this.terminal, 0, y, this.cols - 1, y);
+        lines.push(terminalNative.selectionText(this.terminal).replace(/\s+$/, ''));
+      }
+      while (lines.length > 1 && !lines[lines.length - 1]) lines.pop();
+      this.outputLines = lines; this.outputStart = 0; this.outputEnd = lines.length - 1;
+      this.outputAnchor = -1; this.outputError = ''; this.outputOpen = true;
+    } catch (_) { this.status = '无法读取当前可见输出，请重试'; }
+    finally { this.clearSelection(); }
+  }
+  private chooseOutputLine(index: number): void {
+    if (this.outputAnchor < 0) { this.outputAnchor = index; this.outputStart = index; this.outputEnd = index; }
+    else { this.outputStart = Math.min(index, this.outputAnchor); this.outputEnd = Math.max(index, this.outputAnchor); this.outputAnchor = -1; }
+  }
+  private outputText(): string | null { return terminalExcerpt(this.outputLines, this.outputStart, this.outputEnd, this.terminalId); }
+  private async attachOutput(): Promise<void> {
+    const excerpt = this.outputText();
+    if (excerpt === null || this.attachingOutput || EnvironmentSession.current?.descriptor.environmentId !== this.environmentId) return;
+    this.attachingOutput = true; this.outputError = '';
+    try {
+      const store = await DraftStore.open(getContext(this).filesDir, this.environmentId, this.threadId);
+      const draft = await store.load();
+      if (!this.active || EnvironmentSession.current?.descriptor.environmentId !== this.environmentId) return;
+      await store.save(draft ? draft + '\n\n' + excerpt : excerpt);
+      if (this.active) { this.outputOpen = false; router.back(); }
+    } catch (_) { this.outputError = '保存到消息草稿失败，请重试'; }
+    finally { this.attachingOutput = false; }
+  }
+  @Builder
+  outputSheet() {
+    Column({ space: 12 }) {
+      Text('点击起始行和结束行选择范围').fontSize(this.font(13)).fontColor(this.color('foreground-muted')).width('100%')
+      List() {
+        ForEach(this.outputLines, (line: string, index: number) => {
+          ListItem() {
+            Row({ space: 12 }) {
+              Text(String(index + 1)).fontFamily('monospace').fontSize(this.font(12)).fontColor(this.color('foreground-muted')).width(30)
+              Text(line || ' ').fontFamily('monospace').fontSize(this.sizes.codeFontSize).fontColor(this.color('foreground')).layoutWeight(1)
+            }.width('100%').padding({ top: 6, bottom: 6, left: 8, right: 8 })
+              .backgroundColor(index >= this.outputStart && index <= this.outputEnd ? this.color('subtle-strong') : Color.Transparent)
+              .onClick(() => { this.chooseOutputLine(index); }).accessibilityText(`第 ${index + 1} 行：${line}`)
+          }
+        }, (_line: string, index: number) => String(index))
+      }.layoutWeight(1).width('100%')
+      if (this.outputError) { Text(this.outputError).fontSize(this.font(12)).fontColor(this.color('danger-foreground')) }
+      if (this.outputText() === null) { Text('请选择非空输出，最多 64,000 个字符').fontSize(this.font(12)).fontColor(this.color('foreground-muted')) }
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          AppIcon({ name: 'attach', iconSize: 18, tint: this.color('foreground') })
+          Text(`附加选中输出 · ${this.outputEnd - this.outputStart + 1} 行`).fontSize(this.font(15)).fontColor(this.color('foreground'))
+        }.justifyContent(FlexAlign.Center).width('100%')
+      }.width('100%').height(48).borderRadius(16).backgroundColor(this.color('card'))
+        .enabled(this.outputText() !== null && !this.attachingOutput).onClick(() => { this.attachOutput(); })
+    }.width('100%').height('100%').padding({ left: 16, right: 16, top: 8, bottom: 24 })
+  }
   build() {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Button('返回').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { router.back(); })
-        Text(this.terminalId).fontSize(this.font(16)).fontColor(this.color('foreground')).layoutWeight(1)
-        Button('历史').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.scroll(-this.rows + 1); })
-        Button('最新').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.latest(); })
-
-      }.width('100%')
-      Row({ space: 8 }) {
-        Text(this.status).fontSize(this.font(12)).fontColor(this.ready ? this.color('primary') : this.color('danger-foreground')).layoutWeight(1)
-        Button('设置').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { router.pushUrl({ url: 'pages/Settings' }); })
-        if (this.ready) { Button('关闭终端').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.lifecycleBusy).onClick(() => { this.confirmClose(); }) }
-        else if (this.closedByUser || this.state.status === 'exited' || this.state.status === 'closed') {
-          Button('重新打开').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.lifecycleBusy).onClick(() => { this.changeTerminal(true); })
-        } else { Button('重新连接').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(!this.lifecycleBusy).onClick(() => { this.connection?.start(); }) }
-      }.width('100%')
+    Column({ space: 6 }) {
+      ChatGlass() {
+        Row({ space: 4 }) {
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'back', iconSize: 22, tint: this.color('foreground') }) }
+            .width(38).height(38).padding(0).backgroundColor(Color.Transparent).accessibilityText('返回').onClick(() => { router.back(); })
+          Column({ space: 3 }) {
+            Text(this.terminalId).fontSize(this.font(16)).fontColor(this.color('foreground')).fontWeight(FontWeight.Medium).maxLines(1).width('100%')
+            Text(this.cwd).fontSize(this.font(10)).fontColor(this.color('foreground-muted')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          }.layoutWeight(1)
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'latest', iconSize: 19, tint: this.color('foreground-secondary') }) }
+            .width(36).height(36).padding(0).backgroundColor(Color.Transparent).accessibilityText('回到最新输出').onClick(() => { this.latest(); })
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'copy', iconSize: 19, tint: this.color('foreground-secondary') }) }
+            .width(36).height(36).padding(0).backgroundColor(Color.Transparent).accessibilityText('选择文本').onClick(() => { this.selecting = true; })
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'settings', iconSize: 19, tint: this.color('foreground-secondary') }) }
+            .width(36).height(36).padding(0).backgroundColor(Color.Transparent).accessibilityText('终端设置').onClick(() => { router.pushUrl({ url: 'pages/Settings' }); })
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: this.ready ? 'power' : 'refresh', iconSize: 19, tint: this.color('foreground-secondary') }) }
+            .width(36).height(36).padding(0).backgroundColor(Color.Transparent).enabled(!this.lifecycleBusy)
+            .accessibilityText(this.ready ? '关闭终端' : this.closedByUser || this.state.status === 'exited' || this.state.status === 'closed' ? '重新打开终端' : '重新连接')
+            .onClick(() => { if (this.ready) this.confirmClose(); else if (this.closedByUser || this.state.status === 'exited' || this.state.status === 'closed') this.changeTerminal(true); else this.connection?.start(); })
+        }.width('100%')
+      }
+      if (!this.ready || this.status !== '已连接') { Text(this.status).fontSize(this.font(12)).fontColor(this.color('foreground-muted')).width('100%') }
       if (this.appearanceError) { Text(this.appearanceError).fontSize(this.font(12)).fontColor(this.color('danger-foreground')) }
-      Row({ space: 8 }) {
-        if (this.selecting) {
-          Text('拖动选择文本').fontSize(this.font(12)).fontColor(this.color('foreground')).layoutWeight(1)
-          Button('复制').fontSize(this.font(14)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.copySelection(); })
-          Button('全选').fontSize(this.font(14)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.selectAll(); })
-          Button('取消').fontSize(this.font(14)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.clearSelection(); })
-        } else {
-          Text('长按选词；点选择后拖动').fontSize(this.font(12)).fontColor(this.color('foreground-muted')).layoutWeight(1)
-          Button('选择').fontSize(this.font(14)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.selecting = true; })
-        }
-      }.height(40).width('100%')
+      if (this.selecting) {
+        Row({ space: 8 }) {
+          Text('拖动选择文本').fontSize(this.font(12)).fontColor(this.color('foreground-muted')).layoutWeight(1)
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'copy', iconSize: 18, tint: this.color('foreground') }) }
+            .width(34).height(34).padding(0).backgroundColor(this.color('card')).accessibilityText('复制选中内容').onClick(() => { this.copySelection(); })
+          Button('全选').fontSize(this.font(12)).height(34).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.selectAll(); })
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'close', iconSize: 18, tint: this.color('foreground') }) }
+            .width(34).height(34).padding(0).backgroundColor(Color.Transparent).accessibilityText('取消选择').onClick(() => { this.clearSelection(); })
+        }.width('100%')
+      }
       TerminalCanvas({ frame: this.frame, fontSize: this.fontSize }).layoutWeight(1).width('100%')
         .gesture(GestureGroup(GestureMode.Parallel,
           LongPressGesture({ repeat: false }).onAction((event: GestureEvent) => { this.selectWord(event); }),
@@ -415,51 +494,56 @@ struct TerminalPage {
             }
           })))
         .onAreaChange((_old: Area, area: Area) => { this.resize(Number(area.width), Number(area.height)); })
-      if (this.directInput) {
-        Row({ space: 6 }) {
-          Button('Ctrl+C').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u0003'); })
-          Button('Tab').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\t'); })
-            .keyboardShortcut(FunctionKey.TAB, [])
-          Button('Esc').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b'); })
-            .keyboardShortcut(FunctionKey.ESC, [])
-          Button('Enter').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\r'); })
-        }.enabled(this.ready)
-        Row({ space: 6 }) {
-          Button('↑').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b[A'); })
-            .keyboardShortcut(FunctionKey.DPAD_UP, [])
-          Button('↓').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b[B'); })
-            .keyboardShortcut(FunctionKey.DPAD_DOWN, [])
-          Button('←').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b[D'); })
-            .keyboardShortcut(FunctionKey.DPAD_LEFT, [])
-          Button('→').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b[C'); })
-            .keyboardShortcut(FunctionKey.DPAD_RIGHT, [])
-        }.enabled(this.ready)
-        Row({ space: 8 }) {
-          Button('键盘').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.showKeyboard(); })
-          Button('Ctrl+A').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u0001'); })
-          Button('Ctrl+D').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u0004'); })
-          Button('整行').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.lineInput(); })
-        }.enabled(this.ready).width('100%')
-          .keyboardShortcut('v', [ModifierKey.CTRL], () => { this.pasteClipboard(); })
-      } else {
-      Row({ space: 6 }) {
-        Button('Ctrl+C').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u0003'); })
-        Button('Tab').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\t'); })
-        Button('↑').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b[A'); })
-        Button('↓').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).onClick(() => { this.write('\u001b[B'); })
-      }.enabled(this.ready)
-      Row({ space: 8 }) {
-        TextInput({ placeholder: '输入命令…', text: this.inputLine }).fontSize(this.font(16)).fontColor(this.color('foreground')).backgroundColor(this.color('input')).placeholderColor(this.color('placeholder')).layoutWeight(1)
-          .onChange((value: string) => { this.inputLine = value; })
-          .onSubmit(() => { this.submit(); })
-        Button('逐键').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(this.ready).onClick(() => { this.showKeyboard(); })
-        Button('发送').fontSize(this.font(16)).fontColor(this.color('primary-foreground')).backgroundColor(this.color('primary')).enabled(this.ready && !this.sending).onClick(() => { this.submit(); })
-      }.width('100%')
+      if (this.controlsOpen || this.directInput || this.lineEntry) {
+        Scroll() {
+          Row({ space: 6 }) {
+            Button('Ctrl+C').fontSize(this.font(12)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u0003'); })
+            Button('Tab').fontSize(this.font(12)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\t'); }).keyboardShortcut(FunctionKey.TAB, [])
+            Button('Esc').fontSize(this.font(12)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u001b'); }).keyboardShortcut(FunctionKey.ESC, [])
+            Button('↵').fontSize(this.font(14)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).accessibilityText('回车').onClick(() => { this.write('\r'); })
+            Button('↑').fontSize(this.font(14)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u001b[A'); }).keyboardShortcut(FunctionKey.DPAD_UP, [])
+            Button('↓').fontSize(this.font(14)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u001b[B'); }).keyboardShortcut(FunctionKey.DPAD_DOWN, [])
+            Button('←').fontSize(this.font(14)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u001b[D'); }).keyboardShortcut(FunctionKey.DPAD_LEFT, [])
+            Button('→').fontSize(this.font(14)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u001b[C'); }).keyboardShortcut(FunctionKey.DPAD_RIGHT, [])
+            Button('Ctrl+A').fontSize(this.font(12)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u0001'); })
+            Button('Ctrl+D').fontSize(this.font(12)).height(32).fontColor(this.color('foreground')).backgroundColor(this.color('card')).onClick(() => { this.write('\u0004'); })
+            Button({ type: ButtonType.Circle }) { AppIcon({ name: 'copy', iconSize: 17, tint: this.color('foreground') }) }
+              .width(32).height(32).padding(0).backgroundColor(this.color('card')).accessibilityText('粘贴到终端').onClick(() => { this.pasteClipboard(); })
+          }.enabled(this.ready).keyboardShortcut('v', [ModifierKey.CTRL], () => { this.pasteClipboard(); })
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).height(36).width('100%')
       }
+      if (this.lineEntry) {
+        Row({ space: 8 }) {
+          TextInput({ placeholder: '输入命令…', text: this.inputLine }).fontSize(this.font(15)).fontColor(this.color('foreground'))
+            .backgroundColor(this.color('input')).placeholderColor(this.color('placeholder')).layoutWeight(1)
+            .onChange((value: string) => { this.inputLine = value; }).onSubmit(() => { this.submit(); })
+          Button({ type: ButtonType.Circle }) { AppIcon({ name: 'send', iconSize: 19, tint: this.color('primary-foreground') }) }
+            .width(38).height(38).padding(0).backgroundColor(this.color('primary')).enabled(this.ready && !this.sending).accessibilityText('执行输入命令').onClick(() => { this.submit(); })
+        }.width('100%')
+      }
+      Row({ space: 8 }) {
+        Button({ type: ButtonType.Normal }) {
+          Row({ space: 7 }) {
+            AppIcon({ name: 'attach', iconSize: 18, tint: this.color('foreground-secondary') })
+            Text('附加输出').fontSize(this.font(14)).fontColor(this.color('foreground-secondary'))
+          }
+        }.height(42).padding({ left: 10, right: 10 }).backgroundColor(Color.Transparent).enabled(this.terminal !== null)
+          .onClick(() => { this.openOutput(); })
+        Blank().layoutWeight(1)
+        Button({ type: ButtonType.Circle }) { AppIcon({ name: 'sliders', iconSize: 19, tint: this.controlsOpen ? this.color('primary') : this.color('foreground-secondary') }) }
+          .width(38).height(38).padding(0).backgroundColor(Color.Transparent).accessibilityText('终端快捷键').onClick(() => { this.controlsOpen = !this.controlsOpen; })
+        Button({ type: ButtonType.Circle }) { AppIcon({ name: 'edit', iconSize: 19, tint: this.lineEntry ? this.color('primary') : this.color('foreground-secondary') }) }
+          .width(38).height(38).padding(0).backgroundColor(Color.Transparent).enabled(this.ready).accessibilityText('整行输入')
+          .onClick(() => { this.lineEntry = !this.lineEntry; this.lineInput(); })
+        Button({ type: ButtonType.Circle }) { AppIcon({ name: 'keyboard', iconSize: 22, tint: this.directInput ? this.color('primary') : this.color('foreground-secondary') }) }
+          .width(42).height(42).padding(0).backgroundColor(Color.Transparent).enabled(this.ready).accessibilityText(this.directInput ? '收起键盘' : '打开键盘')
+          .onClick(() => { if (this.directInput) this.lineInput(); else { this.lineEntry = false; this.showKeyboard(); } })
+      }.width('100%')
     }.id('terminal-key-input').focusable(true)
       .onKeyPreIme((event: KeyEvent): boolean => this.editingKey(event))
       .onKeyEvent((event: KeyEvent): boolean => this.textKey(event))
-      .padding({ top: 16, left: 16, right: 16, bottom: 16 + this.keyboardInset })
+      .padding({ top: 8, left: 12, right: 12, bottom: 8 + this.keyboardInset })
       .width('100%').height('100%').backgroundColor(this.color('screen'))
+      .bindSheet($$this.outputOpen, this.outputSheet(), { systemMaterial: immersiveMaterial('popup'), height: SheetSize.LARGE, title: { title: '可见终端输出' }, dragBar: true, showClose: true })
   }
 }

@@ -6,8 +6,10 @@
     "pages/Terminal",
     "pages/Files",
     "pages/ImagePreview",
+    "pages/Browser",
     "pages/AddProject",
     "pages/Settings",
+    "pages/Environments",
     "pages/TaskModel"
   ]
 }
